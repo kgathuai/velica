@@ -1,36 +1,55 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Velica Verify
 
-## Getting Started
+Document verification MVP with a two-layer identity workflow and Qwen2.5-VL-72B extraction.
 
-First, run the development server:
+## Verification Flow
+
+1. User submits registration details plus document image (and optional selfie).
+2. LLM extraction runs through Qwen2.5-VL-72B (OpenAI-compatible API).
+3. Layer 1 database check runs (TransUnion/Equifax mock adapter).
+4. If Layer 1 is `match`: instant approval.
+5. If Layer 1 is `no_match` or `flagged`: Layer 2 biometric check runs (Jumio/Onfido mock adapter).
+6. Final status is approved/rejected with an audit trail.
+
+## Tech Stack
+
+- Next.js 16 App Router + TypeScript
+- Tailwind CSS 4
+- Zod validation
+- In-memory verification store (MVP)
+
+## Environment Variables
+
+Create `.env.local` in project root:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+QWEN_BASE_URL=https://your-openai-compatible-endpoint/v1
+QWEN_API_KEY=your_api_key
+QWEN_MODEL=Qwen/Qwen2.5-VL-72B-Instruct
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+If `QWEN_BASE_URL` or `QWEN_API_KEY` is missing, the app uses a safe fallback extraction for local development.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Run Locally
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm install
+npm run dev
+```
 
-## Learn More
+Open `http://localhost:3000` (or the next available port shown in terminal).
 
-To learn more about Next.js, take a look at the following resources:
+## API Endpoints
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- `POST /api/verify/start`
+	- Starts verification and returns `verificationId`
+- `GET /api/verify/status?id=<verificationId>`
+	- Returns current status, decision, and audit trail
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Validation Scripts
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```bash
+npm run lint
+npm run typecheck
+npm run build
+```
