@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import CameraScanner from "@/components/camera-scanner";
 
 type DocType = "passport" | "driver_license" | "id_card";
 
@@ -44,6 +45,13 @@ const initialFormValues: FormValues = {
   documentFile: null,
   selfieFile: null,
 };
+
+function getDocumentAspectRatio(documentType: DocType): number {
+  if (documentType === "passport") {
+    return 1.42;
+  }
+  return 1.586;
+}
 
 async function fileToBase64(file: File): Promise<string> {
   const buffer = await file.arrayBuffer();
@@ -106,6 +114,7 @@ export default function Home() {
   const [profiles, setProfiles] = useState<SavedProfile[]>([]);
   const [selectedProfileName, setSelectedProfileName] = useState("");
   const [profileMessage, setProfileMessage] = useState("");
+  const [scannerTarget, setScannerTarget] = useState<"document" | "selfie" | null>(null);
 
   useEffect(() => {
     const raw = localStorage.getItem(SAVED_PROFILES_KEY);
@@ -216,9 +225,19 @@ export default function Home() {
     const errors = validateStep(step, values);
     if (Object.keys(errors).length > 0) {
       setFieldErrors(errors);
+      if (step === 2) {
+        if (!values.documentFile) {
+          setScannerTarget("document");
+          setError("Please scan your document first.");
+        } else if (!values.selfieFile) {
+          setScannerTarget("selfie");
+          setError("Selfie is required. Please capture a selfie to continue.");
+        }
+      }
       return;
     }
     setFieldErrors({});
+    setError("");
     setStep((prev) => Math.min(prev + 1, 3));
   }
 
@@ -284,6 +303,40 @@ export default function Home() {
 
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top,#0b1324,#030712_65%)] px-4 py-10 text-slate-100 sm:px-8">
+      {scannerTarget && (
+        <CameraScanner
+          title={scannerTarget === "document" ? "Scan Document" : "Capture Selfie"}
+          hint={
+            scannerTarget === "document"
+              ? values.documentType === "id_card"
+                ? "Align the ID card edges to match the frame and keep all corners visible."
+                : values.documentType === "driver_license"
+                  ? "Align the driver license inside the frame and avoid glare."
+                  : "Align the passport bio page inside the frame."
+              : "Center your face inside the frame with clear lighting."
+          }
+          aspectRatio={
+            scannerTarget === "document" ? getDocumentAspectRatio(values.documentType) : 1
+          }
+          facingMode={scannerTarget === "document" ? "environment" : "user"}
+          onCapture={(file) => {
+            if (scannerTarget === "document") {
+              setField("documentFile", file);
+              if (!values.selfieFile) {
+                setProfileMessage("Document captured. Next, capture your selfie.");
+                setScannerTarget("selfie");
+                return;
+              }
+            } else {
+              setField("selfieFile", file);
+              setProfileMessage("Selfie captured successfully.");
+            }
+            setScannerTarget(null);
+          }}
+          onClose={() => setScannerTarget(null)}
+        />
+      )}
+
       <section className="mx-auto w-full max-w-4xl rounded-3xl border border-slate-800 bg-slate-900/70 p-6 shadow-2xl shadow-sky-950/30 sm:p-8">
         <p className="inline-flex rounded-full border border-sky-700/50 bg-sky-950/50 px-3 py-1 text-xs tracking-wide text-sky-300">
           Velica Verify
@@ -475,9 +528,19 @@ export default function Home() {
 
               <div className="sm:col-span-2 grid gap-2 rounded-xl border border-slate-800 p-4">
                 <p className="text-xs uppercase tracking-wide text-sky-300">Step 2: Captures</p>
+                <p className="text-xs text-slate-400">
+                  Both document and selfie are required before you can continue.
+                </p>
                 <label className="text-sm text-slate-300" htmlFor="documentFile">
                   Document Image (required, you can use camera)
                 </label>
+                <button
+                  type="button"
+                  onClick={() => setScannerTarget("document")}
+                  className="w-fit rounded-lg border border-sky-700 px-3 py-1 text-xs text-sky-200 hover:bg-sky-900/30"
+                >
+                  Open document scanner
+                </button>
                 <input
                   id="documentFile"
                   name="documentFile"
@@ -487,12 +550,23 @@ export default function Home() {
                   className="block w-full text-sm"
                   onChange={(e) => setField("documentFile", e.target.files?.[0] || null)}
                 />
-                {values.documentFile && <p className="text-xs text-slate-400">Selected: {values.documentFile.name}</p>}
+                {values.documentFile ? (
+                  <p className="text-xs text-emerald-300">Document ready: {values.documentFile.name}</p>
+                ) : (
+                  <p className="text-xs text-amber-300">Document not captured yet.</p>
+                )}
                 {fieldErrors.documentFile && <p className="text-xs text-red-300">{fieldErrors.documentFile}</p>}
 
                 <label className="mt-2 text-sm text-slate-300" htmlFor="selfieFile">
                   Selfie Image (required, use front camera)
                 </label>
+                <button
+                  type="button"
+                  onClick={() => setScannerTarget("selfie")}
+                  className="w-fit rounded-lg border border-sky-700 px-3 py-1 text-xs text-sky-200 hover:bg-sky-900/30"
+                >
+                  Open selfie camera
+                </button>
                 <input
                   id="selfieFile"
                   name="selfieFile"
@@ -502,7 +576,11 @@ export default function Home() {
                   className="block w-full text-sm"
                   onChange={(e) => setField("selfieFile", e.target.files?.[0] || null)}
                 />
-                {values.selfieFile && <p className="text-xs text-slate-400">Selected: {values.selfieFile.name}</p>}
+                {values.selfieFile ? (
+                  <p className="text-xs text-emerald-300">Selfie ready: {values.selfieFile.name}</p>
+                ) : (
+                  <p className="text-xs text-amber-300">Selfie not captured yet.</p>
+                )}
                 {fieldErrors.selfieFile && <p className="text-xs text-red-300">{fieldErrors.selfieFile}</p>}
 
                 <label className="mt-2 flex items-center gap-2 text-sm text-slate-300" htmlFor="duplicateDocumentExactly">
