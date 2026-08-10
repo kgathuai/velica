@@ -30,6 +30,7 @@ export async function GET(req: Request) {
     reason: record.reason,
     duplicateDocumentExactly: record.duplicateDocumentExactly,
     documentImageBase64: record.documentImageBase64,
+    selfieImageBase64: record.selfieImageBase64,
     layer1Outcome: record.layer1Outcome,
     layer2Outcome: record.layer2Outcome,
     auditTrail: record.auditTrail,

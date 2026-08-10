@@ -9,6 +9,7 @@ type ResultResponse = {
   reason?: string;
   duplicateDocumentExactly?: boolean;
   documentImageBase64?: string;
+  selfieImageBase64?: string;
   layer1Outcome?: string;
   layer2Outcome?: string;
   llmExtraction?: {
@@ -59,6 +60,18 @@ export default function VerificationResultPage() {
     return `data:image/jpeg;base64,${data.documentImageBase64}`;
   }, [data?.documentImageBase64]);
 
+  const selfieSrc = useMemo(() => {
+    if (!data?.selfieImageBase64) {
+      return "";
+    }
+
+    if (data.selfieImageBase64.startsWith("data:image/")) {
+      return data.selfieImageBase64;
+    }
+
+    return `data:image/jpeg;base64,${data.selfieImageBase64}`;
+  }, [data?.selfieImageBase64]);
+
   return (
     <main className="min-h-screen bg-neutral-950 text-neutral-100 p-6">
       <section className="mx-auto max-w-3xl rounded-2xl border border-neutral-800 bg-neutral-900/70 p-6">
@@ -92,6 +105,19 @@ export default function VerificationResultPage() {
                       COPY
                     </span>
                   )}
+                </div>
+              </div>
+            )}
+
+            {selfieSrc && (
+              <div className="mt-4 rounded-lg border border-neutral-800 p-3">
+                <p className="text-xs uppercase text-neutral-400">Selfie Preview</p>
+                <div className="mt-3 overflow-hidden rounded-md border border-neutral-700">
+                  <img
+                    src={selfieSrc}
+                    alt="Submitted selfie"
+                    className="h-auto w-full object-contain"
+                  />
                 </div>
               </div>
             )}
