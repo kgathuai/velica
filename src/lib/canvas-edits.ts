@@ -14,7 +14,9 @@ import {
   type Adjustments,
   type Annotation,
   type BaseOp,
+  type Point,
 } from "@/lib/image-annotations";
+import { inpaint, maskFromStrokes } from "@/lib/inpaint";
 
 function createCanvas(width: number, height: number): HTMLCanvasElement {
   const canvas = document.createElement("canvas");
@@ -157,6 +159,13 @@ export function buildBaseCanvas(original: HTMLImageElement, baseOps: BaseOp[]): 
       canvas = rotateCanvas(canvas, op.clockwise);
     } else if (op.kind === "flip") {
       canvas = flipCanvas(canvas, op.axis);
+    } else if (op.kind === "erase") {
+      eraseFromCanvas(canvas, op.strokes, op.radius);
+    } else if (op.kind === "overlay") {
+      drawPlacedImage(canvas, op.image, op.x, op.y, op.width, op.height, op.rotation);
+    } else if (op.kind === "raster") {
+      canvas = createCanvas(op.image.naturalWidth, op.image.naturalHeight);
+      canvas.getContext("2d")?.drawImage(op.image, 0, 0);
     }
   }
 
@@ -168,6 +177,53 @@ export function buildBaseCanvas(original: HTMLImageElement, baseOps: BaseOp[]): 
   applyAdjustments(canvas, adjustments);
 
   return canvas;
+}
+
+/** Draws a placed image, rotated about its own centre. */
+export function drawPlacedImage(
+  canvas: HTMLCanvasElement,
+  image: HTMLImageElement,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  rotation: number,
+): void {
+  const context = canvas.getContext("2d");
+  if (!context) {
+    return;
+  }
+
+  context.save();
+  context.translate(x + width / 2, y + height / 2);
+  context.rotate((rotation * Math.PI) / 180);
+  context.drawImage(image, -width / 2, -height / 2, width, height);
+  context.restore();
+}
+
+/** Removes the painted pixels and refills them from what surrounds them. */
+function eraseFromCanvas(canvas: HTMLCanvasElement, strokes: Point[][], radius: number): void {
+  const context = canvas.getContext("2d");
+  if (!context || strokes.length === 0) {
+    return;
+  }
+
+  const built = maskFromStrokes(strokes, radius, canvas.width, canvas.height);
+  if (!built) {
+    return;
+  }
+
+  const image = context.getImageData(0, 0, canvas.width, canvas.height);
+
+  // Bigger holes need more relaxation passes to carry colour inwards.
+  const span = Math.max(
+    built.bounds.maxX - built.bounds.minX,
+    built.bounds.maxY - built.bounds.minY,
+  );
+  const iterations = Math.min(220, Math.max(60, Math.round(span * 1.5)));
+
+  inpaint(image.data, canvas.width, canvas.height, built.mask, built.bounds, iterations);
+  context.putImageData(image, 0, 0);
 }
 
 export function drawAnnotation(
@@ -250,8 +306,17 @@ export function drawAnnotation(
       context.drawImage(scratch, 0, 0, regionWidth, regionHeight, annotation.x, annotation.y, annotation.w, annotation.h);
     }
   } else {
-    context.font = `600 ${annotation.size}px ui-sans-serif, system-ui, -apple-system, sans-serif`;
+    context.font = `${annotation.weight ?? 600} ${annotation.size}px ${
+      annotation.stack ?? "ui-sans-serif, system-ui, -apple-system, sans-serif"
+    }`;
     context.textBaseline = "top";
+
+    // Canvas letterSpacing is not everywhere yet; set it only when supported.
+    if (typeof annotation.letterSpacing === "number" && "letterSpacing" in context) {
+      (context as CanvasRenderingContext2D & { letterSpacing: string }).letterSpacing =
+        `${annotation.letterSpacing}px`;
+    }
+
     // A dark outline keeps the text readable over any photo.
     context.lineWidth = Math.max(2, annotation.size / 10);
     context.strokeStyle = "rgba(0, 0, 0, 0.65)";

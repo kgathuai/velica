@@ -10,7 +10,18 @@ export type Annotation =
   | { kind: "redact"; color: string; x: number; y: number; w: number; h: number }
   | { kind: "pixelate"; x: number; y: number; w: number; h: number; size: number }
   | { kind: "blur"; x: number; y: number; w: number; h: number; radius: number }
-  | { kind: "text"; color: string; x: number; y: number; text: string; size: number };
+  | {
+      kind: "text";
+      color: string;
+      x: number;
+      y: number;
+      text: string;
+      size: number;
+      /** Font stack, so text can match the document it is written on. */
+      stack?: string;
+      weight?: number;
+      letterSpacing?: number;
+    };
 
 /** Whole-image colour adjustments. Multipliers default to 1, amounts to 0. */
 export type Adjustments = {
@@ -37,7 +48,21 @@ export const MULTIPLIER_KEYS = ["brightness", "contrast", "saturation"] as const
 export type BaseOp =
   | { kind: "rotate"; clockwise: boolean }
   | { kind: "flip"; axis: "horizontal" | "vertical" }
-  | { kind: "adjust"; patch: Partial<Adjustments> };
+  | { kind: "adjust"; patch: Partial<Adjustments> }
+  /** Erase strokes; the marked pixels are refilled from their surroundings. */
+  | { kind: "erase"; strokes: Point[][]; radius: number }
+  /** An image placed onto the scan, positioned in canvas pixels. */
+  | {
+      kind: "overlay";
+      image: HTMLImageElement;
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      rotation: number;
+    }
+  /** A whole new bitmap (an AI edit); replaces everything before it. */
+  | { kind: "raster"; image: HTMLImageElement };
 
 /** A restorable point in the edit history. Small: ops and vectors only, no pixels. */
 export type EditState = {

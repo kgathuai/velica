@@ -40,6 +40,21 @@ QWEN_MODEL=Qwen/Qwen2.5-VL-72B-Instruct
 
 If `QWEN_BASE_URL` or `QWEN_API_KEY` is missing, the app uses a safe fallback extraction for local development.
 
+### Optional: AI image editing
+
+Only the **AI edit** button in the picture editor uses this. Everything else works offline
+with no keys. See `.env.example`:
+
+```bash
+IMAGE_EDIT_API_KEY=your_key
+IMAGE_EDIT_MODEL=gemini-2.5-flash-image
+# Optional, for any OpenAI-compatible endpoint that can return images:
+# IMAGE_EDIT_BASE_URL=https://openrouter.ai/api/v1
+```
+
+Leave `IMAGE_EDIT_BASE_URL` unset to use Google Gemini directly. While no key is set, the
+button replies with a message explaining what to configure rather than failing silently.
+
 ## Run Locally
 
 ```bash
@@ -121,7 +136,36 @@ Then, with the phone on the same Wi-Fi:
 Each photo has an **Edit** button that opens a full-screen editor. The original is never
 overwritten — both versions are kept on disk and you can revert at any time.
 
-Manual tools: draw, highlight, text, black out, pixelate, blur, plus undo/redo, rotate and flip.
+Manual tools: draw, highlight, text, black out, pixelate, blur, erase, place an image, plus
+undo/redo, rotate and flip. Every change is a recipe replayed from the untouched capture, so
+undo is exact and nothing is baked in.
+
+| Tool | What it does |
+| --- | --- |
+| **Erase** | Paint over something and it is genuinely removed — the gap is refilled from the surrounding pixels (relaxation inpainting), not covered by a box. Works on the app, offline. |
+| **Image** | Pick a photo, logo or signature from your device and drop it onto the scan. Drag to position, then Smaller / Bigger / Rotate before placing it. |
+| **AI edit** | Describe a change and let an image model make it — e.g. "remove the stamp". This is the only part that needs a key and a network (see above). The result replaces the picture and stays undoable. |
+
+### Matching text to the document
+
+To write on a document so it does not look added, use **Match text**:
+
+1. Drag a box around a patch of the document's existing text.
+2. Optionally type the words that are in the box — that lets the font family be matched too.
+3. The app takes the **colour**, **size** and **weight** straight from those pixels, and — if you
+   typed the words — renders every candidate font and picks the closest glyph shapes.
+4. It then hands you the text tool already configured, and a row of **real characters lifted off
+   the page**, which you can stamp back down pixel-identically.
+
+Manual controls sit alongside all of this: font family, size, bold, letter spacing, a colour
+picker and an **eyedropper** that samples a colour from the page. **Load font** accepts a
+`.ttf` / `.otf` / `.woff` file so an exact typeface can be used with no guessing at all.
+
+> **Limit worth knowing:** without AI you cannot render a font the device does not have, so
+> family matching is only as good as the candidate list (the common system faces). Colour, size
+> and weight are measured directly and are exact. For changing existing text, stamping the
+> document's own characters is pixel-perfect by definition — that is the way to get a result
+> that is genuinely indistinguishable.
 
 You can also type an instruction and press **Apply**. The prompt is interpreted **on the
 device**: there is no model and no network call, so nothing about your documents leaves the

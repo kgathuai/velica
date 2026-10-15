@@ -1,6 +1,6 @@
 /** Small image helpers shared by the scan library. */
 
-function loadImageElement(url: string): Promise<HTMLImageElement> {
+export function loadImageElement(url: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const image = new Image();
     image.onload = () => resolve(image);
