@@ -24,22 +24,15 @@ import {
   type Mask,
 } from "@/lib/font-match";
 import {
-  buildGlyphTemplates,
   chooseFontForGlyphs,
   extractGlyphImage,
   loadFontFile,
   loadImage,
   matchFont,
-  OCR_CHARACTERS,
   sizeForInkHeight,
 } from "@/lib/font-render";
-import {
-  boxFromNormalized,
-  maskHasInk,
-  medianLineHeight,
-  segmentLines,
-  transcribeLine,
-} from "@/lib/ocr";
+import { readLinesFromMask, segmentMaskIntoLines } from "@/lib/document-read";
+import { boxFromNormalized, maskHasInk, medianLineHeight } from "@/lib/ocr";
 import { parseEditPrompt } from "@/lib/prompt-edits";
 
 type Tool =
@@ -122,7 +115,7 @@ const TOOLS: Array<{ id: Tool; label: string }> = [
   { id: "blur", label: "Blur" },
   { id: "erase", label: "Erase" },
   { id: "image", label: "Image" },
-  { id: "match", label: "Match text" },
+  { id: "match", label: "Change text" },
 ];
 
 const PROMPT_EXAMPLES = [
@@ -643,6 +636,95 @@ export default function ImageEditor({
         message += ` ${loaded.length} characters ready to stamp.`;
       }
 
+      // Read what is actually written inside the selection, so it can be changed.
+      const localLines = readLinesFromMask(mask, next.stack, next.weight);
+      const selected: Field[] = [];
+      const prefix = `area-${Math.round(box.x)}-${Math.round(box.y)}`;
+
+      let areaLines: Array<{ text: string; box?: unknown }> | null = null;
+
+      try {
+        const crop = document.createElement("canvas");
+        crop.width = Math.max(1, Math.round(box.width));
+        crop.height = Math.max(1, Math.round(box.height));
+        crop
+          .getContext("2d")
+          ?.drawImage(base, box.x, box.y, box.width, box.height, 0, 0, crop.width, crop.height);
+
+        const response = await fetch("/api/read", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ image: crop.toDataURL("image/jpeg", 0.92) }),
+        });
+
+        if (response.ok) {
+          const payload = (await response.json()) as {
+            lines?: Array<{ text: string; box?: unknown }>;
+          };
+          if (payload.lines && payload.lines.length > 0) {
+            areaLines = payload.lines;
+          }
+        }
+      } catch {
+        // Offline — the local read below covers it.
+      }
+
+      if (areaLines) {
+        areaLines.forEach((line, index) => {
+          // Model boxes are relative to the crop; fall back to the local line.
+          const relative =
+            boxFromNormalized(line.box, box.width, box.height) ?? localLines[index]?.box;
+          if (!relative) {
+            return;
+          }
+
+          selected.push({
+            id: `${prefix}-${index}`,
+            x: box.x + relative.x,
+            y: box.y + relative.y,
+            width: relative.width,
+            height: relative.height,
+            text: line.text,
+            confidence: 1,
+            source: "ai",
+            size: sizeForInkHeight("Hp", next.stack, next.weight, relative.height),
+            color: next.color,
+            stack: next.stack,
+            weight: next.weight,
+          });
+        });
+      } else {
+        localLines.forEach((line, index) => {
+          selected.push({
+            id: `${prefix}-${index}`,
+            x: box.x + line.box.x,
+            y: box.y + line.box.y,
+            width: line.box.width,
+            height: line.box.height,
+            text: line.text,
+            confidence: line.confidence,
+            source: "local",
+            size: sizeForInkHeight("Hp", next.stack, next.weight, line.box.height),
+            color: next.color,
+            stack: next.stack,
+            weight: next.weight,
+          });
+        });
+      }
+
+      if (selected.length > 0) {
+        // Re-selecting the same spot replaces those rows rather than duplicating.
+        setFields((current) => {
+          const byId = new Map(current.map((entry) => [entry.id, entry]));
+          for (const field of selected) {
+            byId.set(field.id, field);
+          }
+          return [...byId.values()].sort((a, b) => a.y - b.y);
+        });
+        setMode("fields");
+        message += ` ${selected.length} line${selected.length === 1 ? "" : "s"} ready to edit — change the text and it rewrites that part of the scan.`;
+      }
+
       setTool("text");
       setPromptFeedback(message);
     } catch {
@@ -1112,22 +1194,7 @@ export default function ImageEditor({
 
       // Lines first (row projection), then characters inside each line. Doing it
       // the other way round returns paragraphs, not letters.
-      const lineBoxes = segmentLines(mask, 3);
-
-      if (lineBoxes.length === 0) {
-        setPromptFeedback("I couldn't find any text on this scan.");
-        return;
-      }
-
-      const lines = lineBoxes
-        .map((lineBox) => {
-          const lineMask = subMask(mask, lineBox);
-          const glyphs = segmentGlyphs(lineMask, 2).filter(
-            (glyph) => glyph.height >= Math.max(3, lineBox.height * 0.3),
-          );
-          return { box: lineBox, mask: lineMask, glyphs };
-        })
-        .filter((line) => line.glyphs.length > 0);
+      const lines = segmentMaskIntoLines(mask);
 
       if (lines.length === 0) {
         setPromptFeedback("I couldn't find any text on this scan.");
@@ -1135,7 +1202,7 @@ export default function ImageEditor({
       }
 
       // The height of one line, not of the whole block of text.
-      const lineHeight = medianLineHeight(lineBoxes);
+      const lineHeight = medianLineHeight(lines.map((line) => line.box));
 
       // Sample characters from across the page to decide the font.
       const sampleMasks: Mask[] = [];
@@ -1222,29 +1289,22 @@ export default function ImageEditor({
           .filter((field) => field.text.trim().length > 0)
           .sort((a, b) => a.y - b.y);
       } else {
-        const templates = buildGlyphTemplates(stack, weight, lineHeight, OCR_CHARACTERS);
-
-        detected = lines
-          .map((line, index) => {
-            const glyphMasks = line.glyphs.map((glyph) => subMask(line.mask, glyph));
-            const { text, confidence } = transcribeLine(glyphMasks, line.glyphs, templates);
-
-            return {
-              id: `field-${index}-${Math.round(line.box.y)}`,
-              x: line.box.x,
-              y: line.box.y,
-              width: line.box.width,
-              height: line.box.height,
-              text,
-              confidence,
-              source: "local" as const,
-              // Measured from real font metrics so the rewrite matches the line.
-              size: sizeForInkHeight("Hp", stack, weight, line.box.height),
-              color,
-              stack,
-              weight,
-            };
-          })
+        detected = readLinesFromMask(mask, stack, weight)
+          .map((line, index) => ({
+            id: `field-${index}-${Math.round(line.box.y)}`,
+            x: line.box.x,
+            y: line.box.y,
+            width: line.box.width,
+            height: line.box.height,
+            text: line.text,
+            confidence: line.confidence,
+            source: "local" as const,
+            // Measured from real font metrics so the rewrite matches the line.
+            size: sizeForInkHeight("Hp", stack, weight, line.box.height),
+            color,
+            stack,
+            weight,
+          }))
           .filter((field) => field.text.replace(/[^A-Za-z0-9]/g, "").length >= 2)
           .sort((a, b) => a.y - b.y);
       }
@@ -1318,15 +1378,17 @@ export default function ImageEditor({
 
   const toolHint = placement
     ? "Drag on the photo to position it, then place it."
-    : tool === "text"
-      ? "Tap the photo to place your text."
-      : tool === "erase"
-        ? "Paint over anything you want to remove — the gap is filled in."
-        : tool === "image"
-          ? "Choose an image to place onto the scan."
-          : tool === "pen" || tool === "highlight"
-            ? "Draw straight on the photo."
-            : "Drag over the area you want to cover.";
+    : tool === "match"
+      ? "Drag a box around the text you want to change. It is read back so you can edit it."
+      : tool === "text"
+        ? "Tap the photo to place your text."
+        : tool === "erase"
+          ? "Paint over anything you want to remove — the gap is filled in."
+          : tool === "image"
+            ? "Choose an image to place onto the scan."
+            : tool === "pen" || tool === "highlight"
+              ? "Draw straight on the photo."
+              : "Drag over the area you want to cover.";
 
   return (
     <div

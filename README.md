@@ -92,6 +92,19 @@ detected corners, so a page photographed at an angle comes out flat and upright.
 > blob search, and the scan will latch onto one part of it. Text, ruled lines and photos are
 > fine; a full-width black bar is not.
 
+### Changing one part of a page
+
+Use the **Change text** tool and drag a box around just the text you want to change:
+
+1. The area is **read back** — the vision model if a key is set, otherwise the offline matcher,
+   scoped to your selection rather than the whole page.
+2. Its **style is sampled** from those same pixels: colour, size, weight and font.
+3. Those lines appear in the **Fields** tab, already filled in.
+4. Edit one and the **picture is rewritten in that spot** — the old text is erased and refilled
+   from the surrounding paper, then the new value is drawn in the document's own style.
+
+Selecting the same spot again replaces those rows rather than duplicating them.
+
 ### Reading a scan into a form
 
 Opening a scan reads the document automatically. Every line of information found is
