@@ -64,7 +64,10 @@ export async function extractIdentityWithQwen(args: {
         {
           type: "image_url",
           image_url: {
-            url: `data:image/jpeg;base64,${args.documentImageBase64}`,
+            // Accepts a full data URL or bare base64, so the original mime type survives.
+            url: args.documentImageBase64.startsWith("data:")
+              ? args.documentImageBase64
+              : `data:image/jpeg;base64,${args.documentImageBase64}`,
           },
         },
       ],

@@ -9,7 +9,7 @@ export async function POST(req: Request) {
 
     if (!parsed.success) {
       const errorDetails = parsed.error.flatten();
-      const { missing, invalid } = getMissingAndInvalidFields(errorDetails.fieldErrors);
+      const { invalid } = getMissingAndInvalidFields(errorDetails.fieldErrors);
       const requiredFields = ["firstName", "lastName", "dob", "documentNumber", "documentType", "documentImageBase64"];
       const actuallyMissing = requiredFields.filter((field) => !body.hasOwnProperty(field));
 
@@ -35,7 +35,9 @@ export async function POST(req: Request) {
         documentType: input.documentType,
       },
       documentImageBase64: input.documentImageBase64,
+      documentImageEditedBase64: input.documentImageEditedBase64,
       selfieImageBase64: input.selfieImageBase64,
+      selfieImageEditedBase64: input.selfieImageEditedBase64,
       duplicateDocumentExactly: input.duplicateDocumentExactly,
       layer1Provider: input.layer1Provider,
       layer2Provider: input.layer2Provider,

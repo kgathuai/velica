@@ -11,7 +11,9 @@ import type {
 export function createPendingRecord(input: {
   applicant: VerificationRecord["applicant"];
   documentImageBase64: string;
+  documentImageEditedBase64?: string;
   selfieImageBase64?: string;
+  selfieImageEditedBase64?: string;
   duplicateDocumentExactly?: boolean;
   layer1Provider?: Layer1Provider;
   layer2Provider?: Layer2Provider;
@@ -23,7 +25,9 @@ export function createPendingRecord(input: {
     createdAt: new Date().toISOString(),
     applicant: input.applicant,
     documentImageBase64: input.documentImageBase64,
+    documentImageEditedBase64: input.documentImageEditedBase64,
     selfieImageBase64: input.selfieImageBase64,
+    selfieImageEditedBase64: input.selfieImageEditedBase64,
     duplicateDocumentExactly: input.duplicateDocumentExactly,
     layer1Provider: input.layer1Provider || "transunion",
     layer2Provider: input.layer2Provider || "jumio",
@@ -62,7 +66,8 @@ export async function runVerification(id: string): Promise<void> {
 
   const llmExtraction = await extractIdentityWithQwen({
     applicant: initial.applicant,
-    documentImageBase64: initial.documentImageBase64,
+    // Read the edited version when there is one — that is the image the user prepared.
+    documentImageBase64: initial.documentImageEditedBase64 ?? initial.documentImageBase64,
     duplicateExactly: initial.duplicateDocumentExactly,
   });
 

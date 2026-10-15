@@ -24,6 +24,12 @@
 .DS_Store
 *.pem
 
+# local verification records — contains identity documents, never commit
+/.data/
+
+# locally trusted development certificates
+/certs/
+
 # debug
 npm-debug.log*
 yarn-debug.log*

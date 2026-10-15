@@ -1,12 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { CameraIcon, CloseIcon, RefreshIcon, Spinner, UploadIcon } from "@/components/ui";
 
 type CameraFacing = "user" | "environment";
 
 type CameraScannerProps = {
   title: string;
   hint: string;
+  /** Aspect ratio of the composition guide drawn over the viewfinder. */
   aspectRatio: number;
   facingMode: CameraFacing;
   onClose: () => void;
@@ -14,10 +16,7 @@ type CameraScannerProps = {
 };
 
 function stopStream(stream: MediaStream | null) {
-  if (!stream) {
-    return;
-  }
-  stream.getTracks().forEach((track) => track.stop());
+  stream?.getTracks().forEach((track) => track.stop());
 }
 
 export default function CameraScanner({
@@ -30,164 +29,270 @@ export default function CameraScanner({
 }: CameraScannerProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const [cameraError, setCameraError] = useState("");
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [facing, setFacing] = useState<CameraFacing>(facingMode);
+  const [ready, setReady] = useState(false);
+  const [capturing, setCapturing] = useState(false);
+  const [frameSize, setFrameSize] = useState("");
+  const [error, setError] = useState("");
 
   useEffect(() => {
     let cancelled = false;
 
-    async function openCamera() {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: false,
-          video: {
-            facingMode: { ideal: facingMode },
-            width: { ideal: 1920 },
-            height: { ideal: 1080 },
-          },
-        });
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      Promise.resolve().then(() => {
+        if (!cancelled) {
+          setError("This browser can't open the camera. Upload a photo instead.");
+        }
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
 
+    navigator.mediaDevices
+      .getUserMedia({
+        audio: false,
+        video: {
+          facingMode: { ideal: facing },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+        },
+      })
+      .then(async (stream) => {
         if (cancelled) {
           stopStream(stream);
           return;
         }
 
         streamRef.current = stream;
-
         const track = stream.getVideoTracks()[0];
+
         try {
           await track.applyConstraints({
             advanced: [{ focusMode: "continuous" } as unknown as MediaTrackConstraintSet],
           });
         } catch {
-          // Ignore unsupported focus constraints on some devices.
+          // Continuous autofocus is not supported on every device.
         }
 
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          await videoRef.current.play();
+        if (cancelled) {
+          stopStream(stream);
+          return;
         }
-      } catch {
-        setCameraError("Unable to access camera. You can use file upload as fallback.");
-      }
-    }
 
-    void openCamera();
+        const video = videoRef.current;
+        if (video) {
+          video.srcObject = stream;
+          try {
+            await video.play();
+          } catch {
+            // Some browsers only allow playback once the element is painted.
+          }
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setError("We couldn't start the camera. Upload a photo instead.");
+        }
+      });
 
     return () => {
       cancelled = true;
       stopStream(streamRef.current);
       streamRef.current = null;
     };
-  }, [facingMode]);
+  }, [facing]);
 
-  const frameStyle = useMemo(
-    () => ({
-      aspectRatio: `${aspectRatio}`,
-    }),
-    [aspectRatio],
-  );
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
+  function handleFlipCamera() {
+    setReady(false);
+    setFrameSize("");
+    setError("");
+    setFacing((current) => (current === "environment" ? "user" : "environment"));
+  }
 
   function handleCapture() {
     const video = videoRef.current;
     if (!video || video.videoWidth === 0 || video.videoHeight === 0) {
-      setCameraError("Camera is not ready yet. Try again in a moment.");
+      setError("The camera isn't ready yet. Give it a moment and try again.");
       return;
     }
 
-    const sourceWidth = video.videoWidth;
-    const sourceHeight = video.videoHeight;
-    const sourceRatio = sourceWidth / sourceHeight;
+    setCapturing(true);
+    setError("");
 
-    let cropWidth = sourceWidth;
-    let cropHeight = sourceHeight;
-    let cropX = 0;
-    let cropY = 0;
-
-    if (sourceRatio > aspectRatio) {
-      cropWidth = Math.floor(sourceHeight * aspectRatio);
-      cropX = Math.floor((sourceWidth - cropWidth) / 2);
-    } else {
-      cropHeight = Math.floor(sourceWidth / aspectRatio);
-      cropY = Math.floor((sourceHeight - cropHeight) / 2);
-    }
-
+    // Save the original frame: the full sensor view, no cropping and no downscaling.
     const canvas = document.createElement("canvas");
-    canvas.width = cropWidth;
-    canvas.height = cropHeight;
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
 
-    const ctx = canvas.getContext("2d");
-    if (!ctx) {
-      setCameraError("Failed to capture image.");
+    const context = canvas.getContext("2d");
+    if (!context) {
+      setCapturing(false);
+      setError("We couldn't capture that photo. Please try again.");
       return;
     }
 
-    ctx.drawImage(video, cropX, cropY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
 
     canvas.toBlob(
       (blob) => {
         if (!blob) {
-          setCameraError("Failed to create image file.");
+          setCapturing(false);
+          setError("We couldn't capture that photo. Please try again.");
           return;
         }
 
-        const file = new File([blob], "camera-capture.jpg", { type: "image/jpeg" });
-        onCapture(file);
-        stopStream(streamRef.current);
-        streamRef.current = null;
+        onCapture(new File([blob], `original-${Date.now()}.jpg`, { type: "image/jpeg" }));
+        window.setTimeout(() => setCapturing(false), 900);
       },
       "image/jpeg",
-      0.92,
+      0.95,
     );
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/95 p-4">
-      <div className="w-full max-w-xl rounded-2xl border border-slate-700 bg-slate-900 p-4 shadow-2xl">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <h2 className="text-lg font-semibold text-slate-100">{title}</h2>
-            <p className="text-sm text-slate-300">{hint}</p>
-          </div>
-          <button
-            type="button"
-            onClick={() => {
-              stopStream(streamRef.current);
-              streamRef.current = null;
-              onClose();
-            }}
-            className="rounded-lg border border-slate-600 px-3 py-1 text-sm text-slate-200 hover:bg-slate-800"
-          >
-            Close
-          </button>
+    <div
+      className="fixed inset-0 z-50 flex flex-col bg-slate-950/95 backdrop-blur-sm"
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+    >
+      <header className="flex items-start justify-between gap-3 px-4 pt-4 sm:px-6">
+        <div>
+          <h2 className="text-base font-semibold text-white">{title}</h2>
+          <p className="mt-0.5 max-w-sm text-xs text-slate-400">{hint}</p>
+          {ready && (
+            <p className="mt-1 text-[11px] text-emerald-300/90">
+              Original kept{frameSize ? ` · ${frameSize}` : ""} · nothing is cropped
+            </p>
+          )}
         </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="btn btn-ghost h-10 w-10 !px-0"
+          aria-label="Close camera"
+        >
+          <CloseIcon className="h-5 w-5" />
+        </button>
+      </header>
 
-        <div className="relative mt-4 overflow-hidden rounded-xl border border-slate-700 bg-black">
-          <video ref={videoRef} className="h-auto w-full object-cover" muted playsInline />
+      <div className="flex flex-1 items-center justify-center px-4 py-4">
+        <div className="relative flex min-h-[240px] w-full max-w-xl items-center justify-center overflow-hidden rounded-2xl border border-slate-700 bg-black">
+          <video
+            ref={videoRef}
+            className="block max-h-[62vh] w-full bg-black object-contain"
+            muted
+            playsInline
+            onLoadedMetadata={(event) => {
+              const video = event.currentTarget;
+              if (video.videoWidth && video.videoHeight) {
+                setFrameSize(`${video.videoWidth}×${video.videoHeight}`);
+              }
+            }}
+            onPlaying={() => setReady(true)}
+          />
 
-          <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-            <div className="h-full w-full bg-black/45 [mask-image:radial-gradient(circle_at_center,transparent_35%,black_36%)]" />
-          </div>
+          {!ready && (
+            <div className="absolute inset-0 grid place-items-center bg-slate-950/80">
+              <span className="flex items-center gap-2 text-xs text-slate-300">
+                <Spinner className="h-4 w-4" />
+                Starting camera…
+              </span>
+            </div>
+          )}
 
-          <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-6">
+          {capturing && <span className="animate-flash absolute inset-0 bg-white" />}
+
+          {/* Composition guide: where to place the subject. The whole frame is saved. */}
+          <div className="pointer-events-none absolute inset-0 grid place-items-center p-5">
             <div
-              style={frameStyle}
-              className="w-full max-w-[88%] rounded-xl border-2 border-sky-300 shadow-[0_0_0_9999px_rgba(0,0,0,0.45)]"
+              className="h-3/4 max-w-full rounded-xl border-2 border-dashed border-white/45"
+              style={{ aspectRatio: `${aspectRatio}` }}
             />
           </div>
-        </div>
 
-        {cameraError && <p className="mt-3 text-sm text-red-300">{cameraError}</p>}
-
-        <div className="mt-4 flex items-center justify-end gap-3">
-          <button
-            type="button"
-            onClick={handleCapture}
-            className="rounded-xl bg-sky-500 px-4 py-2 font-semibold text-slate-950 hover:bg-sky-400"
-          >
-            Capture
-          </button>
+          <span className="pointer-events-none absolute left-3 top-3 h-7 w-7 rounded-tl-lg border-l-2 border-t-2 border-sky-300/90" />
+          <span className="pointer-events-none absolute right-3 top-3 h-7 w-7 rounded-tr-lg border-r-2 border-t-2 border-sky-300/90" />
+          <span className="pointer-events-none absolute bottom-3 left-3 h-7 w-7 rounded-bl-lg border-b-2 border-l-2 border-sky-300/90" />
+          <span className="pointer-events-none absolute bottom-3 right-3 h-7 w-7 rounded-br-lg border-b-2 border-r-2 border-sky-300/90" />
         </div>
       </div>
+
+      {error && (
+        <p className="px-6 pb-2 text-center text-xs font-medium text-red-300" role="alert">
+          {error}
+        </p>
+      )}
+
+      <footer className="flex items-center justify-between gap-4 px-8 pb-8 pt-2">
+        <button
+          type="button"
+          onClick={handleFlipCamera}
+          className="btn btn-secondary h-11 w-11 rounded-full !px-0"
+          aria-label="Switch between front and back camera"
+        >
+          <RefreshIcon className="h-5 w-5" />
+        </button>
+
+        <button
+          type="button"
+          onClick={handleCapture}
+          disabled={!ready || capturing}
+          className="grid h-16 w-16 place-items-center rounded-full bg-white text-slate-900 shadow-2xl transition active:scale-95 disabled:opacity-40"
+          aria-label="Take photo"
+        >
+          {capturing ? (
+            <Spinner className="h-6 w-6" />
+          ) : (
+            <span className="grid h-12 w-12 place-items-center rounded-full border-4 border-slate-900/80">
+              <CameraIcon className="h-5 w-5" />
+            </span>
+          )}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => fileInputRef.current?.click()}
+          className="btn btn-secondary h-11 w-11 rounded-full !px-0"
+          aria-label="Upload a photo instead"
+        >
+          <UploadIcon className="h-5 w-5" />
+        </button>
+      </footer>
+
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          if (file) {
+            onCapture(file);
+          }
+          event.target.value = "";
+        }}
+      />
     </div>
   );
 }
