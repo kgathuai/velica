@@ -8,13 +8,20 @@ export type SavedDocument = {
   name: string;
   createdAt: string;
   updatedAt: string;
-  /** The untouched capture. */
+  /** The untouched camera frame. */
   original: Blob;
+  /** The document cropped and flattened out of the frame; falls back to `original`. */
+  scan?: Blob;
   /** The annotated version, once the scan has been edited. */
   edited?: Blob;
   /** Small data-URL preview for the library grid. */
   thumbnail: string;
 };
+
+/** The image the app should show and edit for a scan. */
+export function workingImage(document: SavedDocument): Blob {
+  return document.edited ?? document.scan ?? document.original;
+}
 
 const DB_NAME = "velica-documents";
 const STORE = "documents";

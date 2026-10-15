@@ -4,7 +4,7 @@
 
 import { useEffect, useState } from "react";
 import AppTabs from "@/components/app-tabs";
-import CameraScanner from "@/components/camera-scanner";
+import CameraScanner, { type CameraCapture } from "@/components/camera-scanner";
 import ImageEditor from "@/components/image-editor";
 import {
   Alert,
@@ -18,6 +18,7 @@ import {
   deleteDocument,
   listDocuments,
   putDocument,
+  workingImage,
   type SavedDocument,
 } from "@/lib/document-store";
 import { createThumbnail, dataUrlToBlob, newScanId, scanName } from "@/lib/image-files";
@@ -71,7 +72,7 @@ export default function DocumentsPage() {
       if (current) {
         URL.revokeObjectURL(current.url);
       }
-      return { doc, url: URL.createObjectURL(doc.edited ?? doc.original) };
+      return { doc, url: URL.createObjectURL(workingImage(doc)) };
     });
   }
 
@@ -85,7 +86,7 @@ export default function DocumentsPage() {
   }
 
   /** Take a photo → save it on the device → open it for editing. */
-  async function handleCaptured(file: File) {
+  async function handleCaptured(capture: CameraCapture) {
     setScanning(false);
     setError("");
 
@@ -96,8 +97,9 @@ export default function DocumentsPage() {
         name: scanName(now),
         createdAt: now.toISOString(),
         updatedAt: now.toISOString(),
-        original: file,
-        thumbnail: await createThumbnail(file),
+        original: capture.original,
+        scan: capture.scan,
+        thumbnail: await createThumbnail(capture.scan),
       };
 
       await putDocument(scan);
@@ -155,10 +157,11 @@ export default function DocumentsPage() {
       {scanning && (
         <CameraScanner
           title="Scan a document"
-          hint="Fill the frame with the document — the whole photo is saved, nothing is cropped."
+          hint="Line the document up in the frame. It is detected automatically and the scan is cropped to its edges."
           aspectRatio={DOCUMENT_ASPECT_RATIO}
           facingMode="environment"
-          onCapture={(file) => void handleCaptured(file)}
+          lookForDocument
+          onCapture={(capture) => void handleCaptured(capture)}
           onClose={() => setScanning(false)}
         />
       )}

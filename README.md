@@ -49,6 +49,25 @@ npm run dev
 
 Open `http://localhost:3000` (or the next available port shown in terminal).
 
+## Document detection when scanning
+
+The scanner looks for the document while the viewfinder is live and outlines it as it finds it
+("Document found"). On the shutter, the scan is cropped and perspective-corrected to the
+detected corners, so a page photographed at an angle comes out flat and upright.
+
+- **The untouched frame is always kept** as `original`; the flattened document is stored as
+  `scan`. Editing works on top of `scan`, and `edited` holds the result.
+- Detection is **heuristic, not machine learning** — Otsu threshold, largest blob that is not
+  the background, then the blob's four extreme points as corners. It runs in about **1.7 ms** on
+  a 320×240 copy of the frame, so it can run live. The warp costs about **20 ms** per capture.
+- Both polarities are handled, so a dark document on a light desk works as well as the usual
+  light-on-dark.
+- If nothing document-shaped is found, the scan falls back to the full frame.
+
+> **Limitation:** a page with a solid dark band spanning its whole width or height can split the
+> blob search, and the scan will latch onto one part of it. Text, ruled lines and photos are
+> fine; a full-width black bar is not.
+
 ## Where documents are saved
 
 **Scans (Documents tab)** live on the device, in the browser's IndexedDB (`velica-documents`).

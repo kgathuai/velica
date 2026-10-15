@@ -2,7 +2,7 @@
 
 /* eslint-disable @next/next/no-img-element -- the review preview is an in-memory object URL, which next/image cannot optimise */
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   CameraIcon,
   CheckIcon,
@@ -12,8 +12,16 @@ import {
   UploadIcon,
   cx,
 } from "@/components/ui";
+import { detectDocument, type DetectPoint, type Quad } from "@/lib/document-detect";
+import { quadEdgeSizes, warpQuadToRectangle } from "@/lib/perspective";
 
 type CameraFacing = "user" | "environment";
+
+/** A capture always yields the untouched frame plus the document-focused scan. */
+export type CameraCapture = {
+  original: File;
+  scan: File;
+};
 
 type CameraScannerProps = {
   title: string;
@@ -21,9 +29,52 @@ type CameraScannerProps = {
   /** Aspect ratio of the composition guide drawn over the viewfinder. */
   aspectRatio: number;
   facingMode: CameraFacing;
+  /** Look for a document in the frame and focus the scan on it. */
+  lookForDocument?: boolean;
   onClose: () => void;
-  onCapture: (file: File) => void;
+  onCapture: (capture: CameraCapture) => void;
 };
+
+/** Detection runs on a small copy of the frame, which is fast enough to run live. */
+const DETECT_WIDTH = 320;
+const DETECT_INTERVAL_MS = 250;
+/** Cap the flattened scan so a phone never builds a gigantic image. */
+const MAX_SCAN_EDGE = 2400;
+
+function canvasToFile(canvas: HTMLCanvasElement, name: string): Promise<File> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => {
+        if (!blob) {
+          reject(new Error("We couldn't process that photo."));
+          return;
+        }
+        resolve(new File([blob], name, { type: "image/jpeg" }));
+      },
+      "image/jpeg",
+      0.95,
+    );
+  });
+}
+
+function sameQuad(a: Quad | null, b: Quad | null): boolean {
+  if (a === b) {
+    return true;
+  }
+  if (!a || !b) {
+    return false;
+  }
+
+  const near = (first: DetectPoint, second: DetectPoint) =>
+    Math.abs(first.x - second.x) < 0.01 && Math.abs(first.y - second.y) < 0.01;
+
+  return (
+    near(a.topLeft, b.topLeft) &&
+    near(a.topRight, b.topRight) &&
+    near(a.bottomRight, b.bottomRight) &&
+    near(a.bottomLeft, b.bottomLeft)
+  );
+}
 
 function stopStream(stream: MediaStream | null) {
   stream?.getTracks().forEach((track) => track.stop());
@@ -34,6 +85,7 @@ export default function CameraScanner({
   hint,
   aspectRatio,
   facingMode,
+  lookForDocument = false,
   onClose,
   onCapture,
 }: CameraScannerProps) {
@@ -46,7 +98,17 @@ export default function CameraScanner({
   const [frameSize, setFrameSize] = useState("");
   const [error, setError] = useState("");
   /** Held for review before it is handed to the form. */
-  const [shot, setShot] = useState<{ file: File; url: string } | null>(null);
+  const [shot, setShot] = useState<{ original: File; scan: File; url: string } | null>(null);
+  /** Detected document corners, normalised to 0..1 of the frame. */
+  const [detected, setDetected] = useState<Quad | null>(null);
+  /** Where the video actually sits inside its box, so the overlay lines up. */
+  const [videoBox, setVideoBox] = useState<{
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+  } | null>(null);
+  const detectCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -147,6 +209,98 @@ export default function CameraScanner({
     return () => URL.revokeObjectURL(shot.url);
   }, [shot]);
 
+  /** Keeps the overlay aligned with the video, which letterboxes inside its box. */
+  const measureVideo = useCallback(() => {
+    const video = videoRef.current;
+    if (!video || !video.videoWidth || !video.videoHeight) {
+      return;
+    }
+
+    const rect = video.getBoundingClientRect();
+    const scale = Math.min(rect.width / video.videoWidth, rect.height / video.videoHeight);
+    const width = video.videoWidth * scale;
+    const height = video.videoHeight * scale;
+
+    setVideoBox({
+      left: (rect.width - width) / 2,
+      top: (rect.height - height) / 2,
+      width,
+      height,
+    });
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener("resize", measureVideo);
+    return () => window.removeEventListener("resize", measureVideo);
+  }, [measureVideo]);
+
+  // Look for a document in the frame while the viewfinder is live.
+  useEffect(() => {
+    if (!lookForDocument || !ready || shot) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const timer = window.setInterval(() => {
+      const video = videoRef.current;
+      if (!video || video.videoWidth === 0 || video.videoHeight === 0) {
+        return;
+      }
+
+      let canvas = detectCanvasRef.current;
+      if (!canvas) {
+        canvas = document.createElement("canvas");
+        detectCanvasRef.current = canvas;
+      }
+
+      const scale = DETECT_WIDTH / video.videoWidth;
+      canvas.width = DETECT_WIDTH;
+      canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      if (!context) {
+        return;
+      }
+
+      context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      let quad: Quad | null = null;
+      try {
+        quad = detectDocument(context.getImageData(0, 0, canvas.width, canvas.height));
+      } catch {
+        quad = null;
+      }
+
+      if (cancelled) {
+        return;
+      }
+
+      const normalised = quad
+        ? {
+            topLeft: { x: quad.topLeft.x / canvas.width, y: quad.topLeft.y / canvas.height },
+            topRight: { x: quad.topRight.x / canvas.width, y: quad.topRight.y / canvas.height },
+            bottomRight: {
+              x: quad.bottomRight.x / canvas.width,
+              y: quad.bottomRight.y / canvas.height,
+            },
+            bottomLeft: {
+              x: quad.bottomLeft.x / canvas.width,
+              y: quad.bottomLeft.y / canvas.height,
+            },
+          }
+        : null;
+
+      // Reusing the previous reference avoids re-rendering on every tick.
+      setDetected((previous) => (sameQuad(previous, normalised) ? previous : normalised));
+    }, DETECT_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [lookForDocument, ready, shot]);
+
   function handleFlipCamera() {
     setReady(false);
     setFrameSize("");
@@ -154,7 +308,7 @@ export default function CameraScanner({
     setFacing((current) => (current === "environment" ? "user" : "environment"));
   }
 
-  function handleCapture() {
+  async function handleCapture() {
     const video = videoRef.current;
     if (!video || video.videoWidth === 0 || video.videoHeight === 0) {
       setError("The camera isn't ready yet. Give it a moment and try again.");
@@ -164,36 +318,68 @@ export default function CameraScanner({
     setCapturing(true);
     setError("");
 
-    // Save the original frame: the full sensor view, no cropping and no downscaling.
-    const canvas = document.createElement("canvas");
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+    try {
+      const width = video.videoWidth;
+      const height = video.videoHeight;
 
-    const context = canvas.getContext("2d");
-    if (!context) {
-      setCapturing(false);
-      setError("We couldn't capture that photo. Please try again.");
-      return;
-    }
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
 
-    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const context = canvas.getContext("2d");
+      if (!context) {
+        throw new Error("We couldn't capture that photo.");
+      }
 
-    canvas.toBlob(
-      (blob) => {
-        if (!blob) {
-          setCapturing(false);
-          setError("We couldn't capture that photo. Please try again.");
-          return;
+      // The untouched frame is always kept, cropped or not.
+      context.drawImage(video, 0, 0, width, height);
+      const original = await canvasToFile(canvas, `original-${Date.now()}.jpg`);
+
+      let scan = original;
+
+      if (lookForDocument && detected) {
+        const quad: Quad = {
+          topLeft: { x: detected.topLeft.x * width, y: detected.topLeft.y * height },
+          topRight: { x: detected.topRight.x * width, y: detected.topRight.y * height },
+          bottomRight: { x: detected.bottomRight.x * width, y: detected.bottomRight.y * height },
+          bottomLeft: { x: detected.bottomLeft.x * width, y: detected.bottomLeft.y * height },
+        };
+
+        const sizes = quadEdgeSizes(quad);
+        const shrink = Math.min(1, MAX_SCAN_EDGE / Math.max(sizes.width, sizes.height));
+
+        const warped = warpQuadToRectangle(
+          context.getImageData(0, 0, width, height),
+          quad,
+          sizes.width * shrink,
+          sizes.height * shrink,
+        );
+
+        const scanCanvas = document.createElement("canvas");
+        scanCanvas.width = warped.width;
+        scanCanvas.height = warped.height;
+
+        const scanContext = scanCanvas.getContext("2d");
+        if (scanContext) {
+          const flattened = scanContext.createImageData(warped.width, warped.height);
+          flattened.data.set(warped.data);
+          scanContext.putImageData(flattened, 0, 0);
         }
 
-        // Hold the shot for review rather than saving it straight away.
-        const file = new File([blob], `original-${Date.now()}.jpg`, { type: "image/jpeg" });
-        setShot({ file, url: URL.createObjectURL(file) });
-        setCapturing(false);
-      },
-      "image/jpeg",
-      0.95,
-    );
+        scan = await canvasToFile(scanCanvas, `scan-${Date.now()}.jpg`);
+      }
+
+      // Show the document-focused version, since that is the one that gets used.
+      setShot({ original, scan, url: URL.createObjectURL(scan) });
+    } catch (captureError) {
+      setError(
+        captureError instanceof Error
+          ? captureError.message
+          : "We couldn't capture that photo. Please try again.",
+      );
+    } finally {
+      setCapturing(false);
+    }
   }
 
   function retake() {
@@ -203,7 +389,7 @@ export default function CameraScanner({
 
   function useShot() {
     if (shot) {
-      onCapture(shot.file);
+      onCapture({ original: shot.original, scan: shot.scan });
     }
   }
 
@@ -224,7 +410,14 @@ export default function CameraScanner({
               ? "Make sure it's sharp, well lit and everything you need is visible."
               : hint}
           </p>
-          {!shot && ready && (
+          {!shot && ready && lookForDocument && (
+            <p className="mt-1 text-[11px] text-sky-300/90">
+              {detected
+                ? "Document found — the scan will be cropped to its edges"
+                : "Looking for a document…"}
+            </p>
+          )}
+          {!shot && ready && !lookForDocument && (
             <p className="mt-1 text-[11px] text-emerald-300/90">
               Original kept{frameSize ? ` · ${frameSize}` : ""} · nothing is cropped
             </p>
@@ -256,8 +449,12 @@ export default function CameraScanner({
               if (video.videoWidth && video.videoHeight) {
                 setFrameSize(`${video.videoWidth}×${video.videoHeight}`);
               }
+              measureVideo();
             }}
-            onPlaying={() => setReady(true)}
+            onPlaying={() => {
+              setReady(true);
+              measureVideo();
+            }}
           />
 
           {shot ? (
@@ -291,6 +488,36 @@ export default function CameraScanner({
               <span className="pointer-events-none absolute right-3 top-3 h-7 w-7 rounded-tr-lg border-r-2 border-t-2 border-sky-300/90" />
               <span className="pointer-events-none absolute bottom-3 left-3 h-7 w-7 rounded-bl-lg border-b-2 border-l-2 border-sky-300/90" />
               <span className="pointer-events-none absolute bottom-3 right-3 h-7 w-7 rounded-br-lg border-b-2 border-r-2 border-sky-300/90" />
+
+              {detected && videoBox && (
+                <svg
+                  className="pointer-events-none absolute"
+                  style={{
+                    left: videoBox.left,
+                    top: videoBox.top,
+                    width: videoBox.width,
+                    height: videoBox.height,
+                  }}
+                  viewBox="0 0 100 100"
+                  preserveAspectRatio="none"
+                  aria-hidden="true"
+                >
+                  <polygon
+                    points={[
+                      detected.topLeft,
+                      detected.topRight,
+                      detected.bottomRight,
+                      detected.bottomLeft,
+                    ]
+                      .map((point) => `${point.x * 100},${point.y * 100}`)
+                      .join(" ")}
+                    fill="rgba(56,189,248,0.14)"
+                    stroke="#7dd3fc"
+                    strokeWidth="2"
+                    vectorEffect="non-scaling-stroke"
+                  />
+                </svg>
+              )}
             </>
           )}
         </div>
@@ -359,7 +586,7 @@ export default function CameraScanner({
         onChange={(event) => {
           const file = event.target.files?.[0];
           if (file) {
-            onCapture(file);
+            onCapture({ original: file, scan: file });
           }
           event.target.value = "";
         }}

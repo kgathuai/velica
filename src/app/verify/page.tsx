@@ -477,16 +477,17 @@ export default function Home() {
             scannerTarget === "document" ? Number(getDocumentAspectRatio(values.documentType)) : 1
           }
           facingMode={scannerTarget === "document" ? "environment" : "user"}
-          onCapture={async (file) => {
+          lookForDocument={scannerTarget === "document"}
+          onCapture={async (capture) => {
             if (scannerTarget === "document") {
-              await handleFilePicked("document", file);
+              await handleFilePicked("document", capture.scan);
               if (!values.selfieImage) {
                 setScannerTarget("selfie");
                 setNotice("ID photo captured. Now take a quick selfie.");
                 return;
               }
             } else {
-              await handleFilePicked("selfie", file);
+              await handleFilePicked("selfie", capture.scan);
               setNotice("Selfie captured. Everything is ready to send.");
             }
             setScannerTarget(null);
