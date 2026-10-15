@@ -5,9 +5,7 @@
 
 import {
   cropMaskToInk,
-  maskSimilarity,
   pickBestFont,
-  resizeMask,
   type FontCandidate,
   type GlyphBox,
   type Mask,
@@ -187,4 +185,95 @@ export function loadImage(url: string): Promise<HTMLImageElement> {
   });
 }
 
-export { cropMaskToInk, maskSimilarity, resizeMask };
+import { matchGlyph, OCR_FONT_PROBE, type GlyphTemplate } from "@/lib/ocr";
+
+/** Rendering the alphabet is not free, so templates are cached per font and size. */
+const templateCache = new Map<string, GlyphTemplate[]>();
+
+export function buildGlyphTemplates(
+  stack: string,
+  weight: number,
+  inkHeight: number,
+  characters: string,
+): GlyphTemplate[] {
+  const key = `${stack}|${weight}|${Math.round(inkHeight)}|${characters.length}`;
+  const cached = templateCache.get(key);
+  if (cached) {
+    return cached;
+  }
+
+  const templates: GlyphTemplate[] = [];
+
+  for (const char of characters) {
+    const mask = renderTextMask(char, stack, weight, inkHeight);
+    if (!mask) {
+      continue;
+    }
+
+    const cropped = cropMaskToInk(mask);
+    if (cropped.width < 2 || cropped.height < 2) {
+      continue;
+    }
+
+    templates.push({ char, mask: cropped });
+  }
+
+  templateCache.set(key, templates);
+  return templates;
+}
+
+/**
+ * Picks the font that best explains the glyphs on the page, by averaging how
+ * well each character matches its closest template. Needs no transcription.
+ */
+export function chooseFontForGlyphs(
+  glyphMasks: Mask[],
+  inkHeight: number,
+  candidates: FontCandidate[],
+  preferredWeight: number,
+): { candidate: FontCandidate; weight: number; score: number } | null {
+  if (glyphMasks.length === 0) {
+    return null;
+  }
+
+  // Try the measured weight first and only fall back to the other if it is poor.
+  const weights = preferredWeight === 700 ? [700, 400] : [400, 700];
+
+  let best: { candidate: FontCandidate; weight: number; score: number } | null = null;
+
+  for (const candidate of candidates) {
+    for (const weight of weights) {
+      const templates = buildGlyphTemplates(
+        candidate.stack,
+        weight,
+        inkHeight,
+        OCR_FONT_PROBE,
+      );
+
+      if (templates.length === 0) {
+        continue;
+      }
+
+      let total = 0;
+      for (const glyph of glyphMasks) {
+        total += matchGlyph(glyph, templates).score;
+      }
+
+      const score = total / glyphMasks.length;
+      if (!best || score > best.score) {
+        best = { candidate, weight, score };
+      }
+    }
+
+    // Once a font clearly wins there is no need to render the rest.
+    if (best && best.score > 0.82) {
+      break;
+    }
+  }
+
+  return best;
+}
+
+export { OCR_CHARACTERS, OCR_FONT_PROBE } from "@/lib/ocr";
+
+export { cropMaskToInk, maskSimilarity, resizeMask } from "@/lib/font-match";

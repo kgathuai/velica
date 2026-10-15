@@ -170,6 +170,7 @@ export default function DocumentsPage() {
         <ImageEditor
           title="Edit your scan"
           source={editing.url}
+          autoRead
           onCancel={closeEditor}
           onSave={(dataUrl) => void handleEditorSave(dataUrl)}
         />

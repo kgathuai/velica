@@ -16,12 +16,22 @@ import {
   analyzeInk,
   regionMask,
   segmentGlyphs,
+  subMask,
   TEXT_FONT_CANDIDATES,
   toHex,
   type FontCandidate,
   type GlyphBox,
 } from "@/lib/font-match";
-import { extractGlyphImage, loadFontFile, loadImage, matchFont } from "@/lib/font-render";
+import {
+  buildGlyphTemplates,
+  chooseFontForGlyphs,
+  extractGlyphImage,
+  loadFontFile,
+  loadImage,
+  matchFont,
+  OCR_CHARACTERS,
+} from "@/lib/font-render";
+import { groupIntoLines, maskHasInk, transcribeLine } from "@/lib/ocr";
 import { parseEditPrompt } from "@/lib/prompt-edits";
 
 type Tool =
@@ -44,6 +54,21 @@ type TextStyle = {
   weight: number;
   color: string;
   letterSpacing: number;
+};
+
+/** One line of text found on the document, with the style needed to rewrite it. */
+type Field = {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  text: string;
+  confidence: number;
+  size: number;
+  color: string;
+  stack: string;
+  weight: number;
 };
 
 const DEFAULT_TEXT_STYLE: TextStyle = {
@@ -187,11 +212,14 @@ const EMPTY_STATE: EditState = { baseOps: [], annotations: [] };
 export default function ImageEditor({
   title,
   source,
+  autoRead = false,
   onCancel,
   onSave,
 }: {
   title: string;
   source: string;
+  /** Read the document's text as soon as it opens — used for scans. */
+  autoRead?: boolean;
   onCancel: () => void;
   onSave: (dataUrl: string) => void;
 }) {
@@ -220,6 +248,13 @@ export default function ImageEditor({
   const [glyphStamps, setGlyphStamps] = useState<{ box: GlyphBox; image: HTMLImageElement }[]>([]);
   const [pickingColour, setPickingColour] = useState(false);
   const [matching, setMatching] = useState(false);
+  const [fields, setFields] = useState<Field[]>([]);
+  const [reading, setReading] = useState(false);
+  const [mode, setMode] = useState<"edit" | "fields">("edit");
+  const readOnceRef = useRef(false);
+  const readingRef = useRef(false);
+  const fieldBoxesRef = useRef<Field[]>([]);
+  const fieldsModeRef = useRef(false);
   const fontInputRef = useRef<HTMLInputElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const placementRef = useRef<PlacedImage | null>(null);
@@ -290,6 +325,19 @@ export default function ImageEditor({
       );
       context.restore();
     }
+
+    // Outline every piece of information found on the document.
+    if (fieldsModeRef.current && fieldBoxesRef.current.length > 0) {
+      context.save();
+      context.lineWidth = 2;
+      context.strokeStyle = "rgba(56, 189, 248, 0.95)";
+      context.fillStyle = "rgba(56, 189, 248, 0.12)";
+      for (const field of fieldBoxesRef.current) {
+        context.fillRect(field.x - 2, field.y - 2, field.width + 4, field.height + 4);
+        context.strokeRect(field.x - 2, field.y - 2, field.width + 4, field.height + 4);
+      }
+      context.restore();
+    }
   }, []);
 
   const scheduleRedraw = useCallback(() => {
@@ -319,6 +367,12 @@ export default function ImageEditor({
     placementRef.current = placement;
     scheduleRedraw();
   }, [placement, scheduleRedraw]);
+
+  useEffect(() => {
+    fieldBoxesRef.current = fields;
+    fieldsModeRef.current = mode === "fields";
+    scheduleRedraw();
+  }, [fields, mode, scheduleRedraw]);
 
   // Load the untouched original once; every render is replayed from it.
   useEffect(() => {
@@ -1021,6 +1075,143 @@ export default function ImageEditor({
   const canRedo = historyIndex < history.length - 1;
   const hasEdits = current.annotations.length > 0 || current.baseOps.length > 0;
 
+  /** Finds every line of text on the scan and reads it back. */
+  const readDocumentText = useCallback(async () => {
+    const base = baseRef.current;
+    const context = base?.getContext("2d", { willReadFrequently: true });
+
+    if (!base || !context || readingRef.current) {
+      return;
+    }
+
+    readingRef.current = true;
+    setReading(true);
+    setPromptFeedback("");
+
+    try {
+      const image = context.getImageData(0, 0, base.width, base.height);
+      const whole = { x: 0, y: 0, width: base.width, height: base.height };
+      const analysis = analyzeInk(image, whole);
+
+      if (!analysis) {
+        setPromptFeedback("I couldn't find any text on this scan.");
+        return;
+      }
+
+      const mask = regionMask(image, whole, analysis);
+      const glyphBoxes = segmentGlyphs(mask).filter(
+        (box) => box.height >= Math.max(4, analysis.inkHeight * 0.35),
+      );
+
+      if (glyphBoxes.length === 0) {
+        setPromptFeedback("I couldn't find any text on this scan.");
+        return;
+      }
+
+      // Decide the font from a sample of glyphs, then read with it.
+      const sampleMasks = glyphBoxes
+        .slice(0, 20)
+        .map((box) => subMask(mask, box))
+        .filter(maskHasInk);
+
+      const chosen = chooseFontForGlyphs(
+        sampleMasks,
+        analysis.inkHeight,
+        [...TEXT_FONT_CANDIDATES, ...customFonts],
+        analysis.bold ? 700 : 400,
+      );
+
+      const stack = chosen?.candidate.stack ?? "Helvetica, Arial, sans-serif";
+      const weight = chosen?.weight ?? 400;
+      const templates = buildGlyphTemplates(stack, weight, analysis.inkHeight, OCR_CHARACTERS);
+
+      const size = Math.max(8, Math.round(analysis.inkHeight / 0.7));
+      const color = toHex(analysis.ink);
+
+      const detected: Field[] = groupIntoLines(glyphBoxes)
+        .map((line, index) => {
+          const glyphMasks = line.glyphs.map((box) => subMask(mask, box));
+          const { text, confidence } = transcribeLine(glyphMasks, line.glyphs, templates);
+
+          return {
+            id: `field-${index}-${Math.round(line.box.y)}`,
+            ...line.box,
+            text,
+            confidence,
+            size,
+            color,
+            stack,
+            weight,
+          };
+        })
+        .filter((field) => field.text.replace(/[^A-Za-z0-9]/g, "").length >= 2)
+        .sort((a, b) => a.y - b.y);
+
+      setFields(detected);
+      setMode("fields");
+      setTextStyle((current) => ({
+        ...current,
+        stack,
+        size,
+        color,
+        weight,
+        label: chosen?.candidate.label ?? current.label,
+      }));
+
+      setPromptFeedback(
+        detected.length > 0
+          ? `Found ${detected.length} line${detected.length === 1 ? "" : "s"}. Correct anything I misread and the scan updates.`
+          : "No readable text found.",
+      );
+    } catch {
+      setPromptFeedback("I couldn't read this scan.");
+    } finally {
+      readingRef.current = false;
+      setReading(false);
+    }
+  }, [customFonts]);
+
+  /** Writing into a field rewrites that line on the picture itself. */
+  function applyFieldEdit(field: Field, text: string) {
+    setFields((current) =>
+      current.map((entry) => (entry.id === field.id ? { ...entry, text } : entry)),
+    );
+
+    // Re-editing the same field replaces its op rather than stacking them.
+    const baseOps = current.baseOps.filter(
+      (op) => !(op.kind === "replaceText" && op.fieldId === field.id),
+    );
+
+    pushState({
+      baseOps: [
+        ...baseOps,
+        {
+          kind: "replaceText",
+          fieldId: field.id,
+          x: field.x,
+          y: field.y,
+          width: field.width,
+          height: field.height,
+          text,
+          stack: field.stack,
+          weight: field.weight,
+          size: field.size,
+          color: field.color,
+        },
+      ],
+      annotations: current.annotations,
+    });
+  }
+
+  // Scans are read as soon as the editor opens; the ref keeps it to one attempt.
+  useEffect(() => {
+    if (!autoRead || !ready || readOnceRef.current) {
+      return;
+    }
+    readOnceRef.current = true;
+    void readDocumentText();
+  }, [autoRead, ready, readDocumentText]);
+
   const toolHint = placement
     ? "Drag on the photo to position it, then place it."
     : tool === "text"
@@ -1121,6 +1312,87 @@ export default function ImageEditor({
       )}
 
       <div className="border-t border-slate-800 px-3 pb-5 pt-3 sm:px-6">
+        <div className="mb-3 flex gap-1 rounded-xl border border-slate-800 bg-slate-900/60 p-1">
+          {(["edit", "fields"] as const).map((id) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setMode(id)}
+              aria-pressed={mode === id}
+              className={cx(
+                "flex-1 rounded-lg px-3 py-1.5 text-xs font-semibold transition",
+                mode === id
+                  ? "bg-sky-500/15 text-sky-200"
+                  : "text-slate-400 hover:text-slate-200",
+              )}
+            >
+              {id === "edit"
+                ? "Edit picture"
+                : `Fields${fields.length > 0 ? ` (${fields.length})` : ""}`}
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={() => void readDocumentText()}
+            disabled={!ready || reading}
+            className="btn btn-secondary shrink-0 !px-3 !py-1.5 text-[11px]"
+          >
+            {reading ? <Spinner className="h-3.5 w-3.5" /> : null}
+            {reading ? "Reading…" : "Read text"}
+          </button>
+        </div>
+
+        {mode === "fields" ? (
+          <div className="space-y-2">
+            {reading && (
+              <p className="flex items-center gap-2 text-xs text-sky-300">
+                <Spinner className="h-4 w-4" />
+                Finding and reading the text on this document…
+              </p>
+            )}
+
+            {!reading && fields.length === 0 && (
+              <p className="text-xs text-slate-400">
+                Nothing read yet. Tap “Read text”, or switch to Edit picture to work on the image
+                directly.
+              </p>
+            )}
+
+            {fields.map((field, index) => (
+              <label key={field.id} className="block">
+                <span className="mb-1 flex items-center justify-between gap-2 text-[11px] text-slate-500">
+                  <span>Line {index + 1}</span>
+                  <span>{Math.round(field.confidence * 100)}% shape match</span>
+                </span>
+                <input
+                  className="field !py-2 text-[13px]"
+                  value={field.text}
+                  onChange={(event) =>
+                    setFields((current) =>
+                      current.map((entry) =>
+                        entry.id === field.id ? { ...entry, text: event.target.value } : entry,
+                      ),
+                    )
+                  }
+                  onBlur={(event) => applyFieldEdit(field, event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.currentTarget.blur();
+                    }
+                  }}
+                />
+              </label>
+            ))}
+
+            {fields.length > 0 && (
+              <p className="text-[11px] text-slate-500">
+                Leaving a field writes the new value onto the scan in the document&apos;s own colour,
+                size and font. Undo works as usual.
+              </p>
+            )}
+          </div>
+        ) : (
+        <>
         <form
           className="flex gap-2"
           onSubmit={(event) => {
@@ -1527,6 +1799,8 @@ export default function ImageEditor({
             ))}
           </div>
         </div>
+        </>
+        )}
       </div>
       <input
         ref={fontInputRef}

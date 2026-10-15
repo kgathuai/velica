@@ -62,7 +62,24 @@ export type BaseOp =
       rotation: number;
     }
   /** A whole new bitmap (an AI edit); replaces everything before it. */
-  | { kind: "raster"; image: HTMLImageElement };
+  | { kind: "raster"; image: HTMLImageElement }
+  /**
+   * Rewrites a line of the document: the old text is erased and refilled, then
+   * the new value is written in the document's own style.
+   */
+  | {
+      kind: "replaceText";
+      fieldId: string;
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      text: string;
+      stack: string;
+      weight: number;
+      size: number;
+      color: string;
+    };
 
 /** A restorable point in the edit history. Small: ops and vectors only, no pixels. */
 export type EditState = {

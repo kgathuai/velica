@@ -326,6 +326,26 @@ export function cropMaskToInk(mask: Mask): Mask {
   return { data, width, height };
 }
 
+/** Copies the pixels of one glyph out of a larger mask. */
+export function subMask(mask: Mask, box: GlyphBox): Mask {
+  const x0 = Math.max(0, Math.round(box.x));
+  const y0 = Math.max(0, Math.round(box.y));
+  const x1 = Math.min(mask.width, Math.round(box.x + box.width));
+  const y1 = Math.min(mask.height, Math.round(box.y + box.height));
+
+  const width = Math.max(1, x1 - x0);
+  const height = Math.max(1, y1 - y0);
+  const data = new Uint8Array(width * height);
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      data[y * width + x] = mask.data[(y + y0) * mask.width + (x + x0)];
+    }
+  }
+
+  return { data, width, height };
+}
+
 /** Nearest-neighbour resize, which is all a binary mask needs. */
 export function resizeMask(mask: Mask, width: number, height: number): Mask {
   const data = new Uint8Array(width * height);
@@ -361,6 +381,22 @@ export function maskSimilarity(first: Mask, second: Mask): number {
 }
 
 /**
+ * Shape score for two cropped masks.
+ *
+ * Resizing a candidate to the target's box throws away its proportions, which
+ * makes a vertical bar and a horizontal bar look identical. Multiplying by how
+ * well the aspect ratios agree restores that information.
+ */
+export function shapeSimilarity(target: Mask, candidate: Mask): number {
+  const targetAspect = target.width / Math.max(1, target.height);
+  const candidateAspect = candidate.width / Math.max(1, candidate.height);
+  const aspect =
+    Math.min(targetAspect, candidateAspect) / Math.max(targetAspect, candidateAspect);
+
+  return maskSimilarity(target, resizeMask(candidate, target.width, target.height)) * aspect;
+}
+
+/**
  * Picks the candidate font whose rendered glyph shapes best match the sample.
  * The renderer is injected so the selection logic can be tested without a canvas.
  */
@@ -378,9 +414,8 @@ export function pickBestFont(
       continue;
     }
 
-    const normalised = resizeMask(cropMaskToInk(rendered), target.width, target.height);
-    const score = maskSimilarity(target, normalised);
-
+    const cropped = cropMaskToInk(rendered);
+    const score = shapeSimilarity(target, cropped);
     if (!best || score > best.score) {
       best = { candidate, score };
     }

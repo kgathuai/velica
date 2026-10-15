@@ -166,6 +166,8 @@ export function buildBaseCanvas(original: HTMLImageElement, baseOps: BaseOp[]): 
     } else if (op.kind === "raster") {
       canvas = createCanvas(op.image.naturalWidth, op.image.naturalHeight);
       canvas.getContext("2d")?.drawImage(op.image, 0, 0);
+    } else if (op.kind === "replaceText") {
+      replaceTextOnCanvas(canvas, op);
     }
   }
 
@@ -201,8 +203,7 @@ export function drawPlacedImage(
   context.restore();
 }
 
-/** Removes the painted pixels and refills them from what surrounds them. */
-function eraseFromCanvas(canvas: HTMLCanvasElement, strokes: Point[][], radius: number): void {
+/** Removes the painted pixels and refills them from what surrounds them. */function eraseFromCanvas(canvas: HTMLCanvasElement, strokes: Point[][], radius: number): void {
   const context = canvas.getContext("2d");
   if (!context || strokes.length === 0) {
     return;
@@ -224,6 +225,53 @@ function eraseFromCanvas(canvas: HTMLCanvasElement, strokes: Point[][], radius: 
 
   inpaint(image.data, canvas.width, canvas.height, built.mask, built.bounds, iterations);
   context.putImageData(image, 0, 0);
+}
+
+/**
+ * Rewrites one line of a document: erase the existing text (refilling from the
+ * surrounding paper) and draw the replacement in the same font, colour and size,
+ * shrinking it if the new value is longer than the space it replaces.
+ */
+function replaceTextOnCanvas(
+  canvas: HTMLCanvasElement,
+  op: Extract<BaseOp, { kind: "replaceText" }>,
+): void {
+  const context = canvas.getContext("2d");
+  if (!context) {
+    return;
+  }
+
+  const padding = Math.max(2, Math.round(op.height * 0.4));
+  const centreY = op.y + op.height / 2;
+
+  // One wide stroke across the line is enough to mask the old glyphs.
+  eraseFromCanvas(
+    canvas,
+    [
+      [
+        { x: op.x - padding, y: centreY },
+        { x: op.x + op.width + padding, y: centreY },
+      ],
+    ],
+    op.height / 2 + padding,
+  );
+
+  const available = op.width + padding * 2;
+  context.save();
+  context.fillStyle = op.color;
+  context.textBaseline = "middle";
+
+  let size = op.size;
+  context.font = `${op.weight} ${size}px ${op.stack}`;
+  const measured = context.measureText(op.text).width;
+
+  if (measured > available && measured > 0) {
+    size = Math.max(6, Math.floor((size * available) / measured));
+  }
+
+  context.font = `${op.weight} ${size}px ${op.stack}`;
+  context.fillText(op.text, op.x, centreY);
+  context.restore();
 }
 
 export function drawAnnotation(

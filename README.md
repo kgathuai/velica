@@ -83,6 +83,27 @@ detected corners, so a page photographed at an angle comes out flat and upright.
 > blob search, and the scan will latch onto one part of it. Text, ruled lines and photos are
 > fine; a full-width black bar is not.
 
+### Reading a scan into a form
+
+Opening a scan reads the document automatically. Every line of information found is
+**outlined on the picture**, and a **Fields** tab appears below it with one editable box per line.
+Change a value and the **picture itself is rewritten**: the old text is erased and refilled from
+the surrounding paper, then the new value is drawn in the document's own colour, size and font
+(shrinking to fit if it is longer). Each edit is a normal undo step.
+
+The reading is done with **template OCR**, no model and no network:
+
+1. Threshold the page into ink and paper.
+2. Split the ink into character boxes, then group those into lines.
+3. Pick the font whose rendered glyphs best explain the page.
+4. Render `A–Z a–z 0–9` and punctuation in that font and match each character by shape,
+   scoring both overlap and aspect ratio. Word gaps are inferred from wider spaces.
+
+> **Expect to correct it.** Character shapes are compared, not understood, so lookalikes
+> (`O`/`0`, `l`/`1`, `rn`/`m`) will sometimes be wrong. That is exactly why the output is a form
+> you can edit rather than a finished result — the picture is only rewritten once you accept a
+> value. Loading the document's actual font file (Load font) makes the matching markedly better.
+
 ## Where documents are saved
 
 **Scans (Documents tab)** live on the device, in the browser's IndexedDB (`velica-documents`).
