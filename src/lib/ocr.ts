@@ -16,13 +16,6 @@ import {
 
 export type GlyphTemplate = { char: string; mask: Mask };
 
-export type DetectedLine = {
-  /** Bounding box of the whole line, in canvas pixels. */
-  box: GlyphBox;
-  /** The characters found in it, left to right. */
-  glyphs: GlyphBox[];
-};
-
 export const OCR_CHARACTERS =
   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-/.,:;()&%#'\"+@";
 
@@ -39,52 +32,75 @@ export function maskHasInk(mask: Mask): boolean {
 }
 
 /**
- * Groups character boxes into lines by vertical overlap. Boxes are matched to
- * the line whose band their centre falls in, which copes with slightly ragged
- * baselines without needing a deskew step.
+ * Splits a page into lines using a row projection.
+ *
+ * This has to happen *before* character segmentation: a column projection over a
+ * whole page sees ink in almost every column (from different lines), so it would
+ * return paragraphs rather than characters.
  */
-export function groupIntoLines(glyphs: GlyphBox[]): DetectedLine[] {
-  if (glyphs.length === 0) {
-    return [];
+export function segmentLines(mask: Mask, minHeight = 3): GlyphBox[] {
+  const rows = new Uint32Array(mask.height);
+
+  for (let y = 0; y < mask.height; y += 1) {
+    let count = 0;
+    for (let x = 0; x < mask.width; x += 1) {
+      if (mask.data[y * mask.width + x] === 1) {
+        count += 1;
+      }
+    }
+    rows[y] = count;
   }
 
-  const sorted = [...glyphs].sort(
-    (a, b) => a.y + a.height / 2 - (b.y + b.height / 2),
-  );
+  const boxes: GlyphBox[] = [];
+  let start = -1;
 
-  const lines: Array<{ glyphs: GlyphBox[]; top: number; bottom: number }> = [];
+  const close = (endY: number) => {
+    if (start < 0 || endY - start < minHeight) {
+      start = -1;
+      return;
+    }
 
-  for (const glyph of sorted) {
-    const top = glyph.y;
-    const bottom = glyph.y + glyph.height;
-    const centre = (top + bottom) / 2;
-    const slack = Math.max(2, glyph.height * 0.4);
+    let minX = mask.width;
+    let maxX = -1;
 
-    const line = lines.find(
-      (candidate) => centre >= candidate.top - slack && centre <= candidate.bottom + slack,
-    );
+    for (let y = start; y < endY; y += 1) {
+      for (let x = 0; x < mask.width; x += 1) {
+        if (mask.data[y * mask.width + x] === 1) {
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+        }
+      }
+    }
 
-    if (line) {
-      line.glyphs.push(glyph);
-      line.top = Math.min(line.top, top);
-      line.bottom = Math.max(line.bottom, bottom);
+    if (maxX >= minX) {
+      boxes.push({ x: minX, y: start, width: maxX - minX + 1, height: endY - start });
+    }
+
+    start = -1;
+  };
+
+  for (let y = 0; y < mask.height; y += 1) {
+    if (rows[y] > 0) {
+      if (start < 0) {
+        start = y;
+      }
     } else {
-      lines.push({ glyphs: [glyph], top, bottom });
+      close(y);
     }
   }
+  close(mask.height);
 
-  return lines.map((line) => {
-    const ordered = [...line.glyphs].sort((a, b) => a.x - b.x);
-    const minX = Math.min(...ordered.map((glyph) => glyph.x));
-    const maxX = Math.max(...ordered.map((glyph) => glyph.x + glyph.width));
-    const minY = Math.min(...ordered.map((glyph) => glyph.y));
-    const maxY = Math.max(...ordered.map((glyph) => glyph.y + glyph.height));
+  return boxes;
+}
 
-    return {
-      glyphs: ordered,
-      box: { x: minX, y: minY, width: maxX - minX, height: maxY - minY },
-    };
-  });
+/** The typical height of a line, used to size templates and the rewritten text. */
+export function medianLineHeight(boxes: GlyphBox[]): number {
+  if (boxes.length === 0) {
+    return 0;
+  }
+
+  const heights = boxes.map((box) => box.height).sort((a, b) => a - b);
+  return heights[Math.floor(heights.length / 2)];
 }
 
 /** best character for one glyph, by shape overlap. */

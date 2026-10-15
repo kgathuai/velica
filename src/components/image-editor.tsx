@@ -21,6 +21,7 @@ import {
   toHex,
   type FontCandidate,
   type GlyphBox,
+  type Mask,
 } from "@/lib/font-match";
 import {
   buildGlyphTemplates,
@@ -30,8 +31,9 @@ import {
   loadImage,
   matchFont,
   OCR_CHARACTERS,
+  sizeForInkHeight,
 } from "@/lib/font-render";
-import { groupIntoLines, maskHasInk, transcribeLine } from "@/lib/ocr";
+import { maskHasInk, medianLineHeight, segmentLines, transcribeLine } from "@/lib/ocr";
 import { parseEditPrompt } from "@/lib/prompt-edits";
 
 type Tool =
@@ -1099,46 +1101,78 @@ export default function ImageEditor({
       }
 
       const mask = regionMask(image, whole, analysis);
-      const glyphBoxes = segmentGlyphs(mask).filter(
-        (box) => box.height >= Math.max(4, analysis.inkHeight * 0.35),
-      );
 
-      if (glyphBoxes.length === 0) {
+      // Lines first (row projection), then characters inside each line. Doing it
+      // the other way round returns paragraphs, not letters.
+      const lineBoxes = segmentLines(mask, 3);
+
+      if (lineBoxes.length === 0) {
         setPromptFeedback("I couldn't find any text on this scan.");
         return;
       }
 
-      // Decide the font from a sample of glyphs, then read with it.
-      const sampleMasks = glyphBoxes
-        .slice(0, 20)
-        .map((box) => subMask(mask, box))
-        .filter(maskHasInk);
+      const lines = lineBoxes
+        .map((lineBox) => {
+          const lineMask = subMask(mask, lineBox);
+          const glyphs = segmentGlyphs(lineMask, 2).filter(
+            (glyph) => glyph.height >= Math.max(3, lineBox.height * 0.3),
+          );
+          return { box: lineBox, mask: lineMask, glyphs };
+        })
+        .filter((line) => line.glyphs.length > 0);
+
+      if (lines.length === 0) {
+        setPromptFeedback("I couldn't find any text on this scan.");
+        return;
+      }
+
+      // The height of one line, not of the whole block of text.
+      const lineHeight = medianLineHeight(lineBoxes);
+
+      // Sample characters from across the page to decide the font.
+      const sampleMasks: Mask[] = [];
+      for (const line of lines) {
+        for (const glyph of line.glyphs.slice(0, 4)) {
+          const glyphMask = subMask(line.mask, glyph);
+          if (maskHasInk(glyphMask)) {
+            sampleMasks.push(glyphMask);
+          }
+          if (sampleMasks.length >= 24) {
+            break;
+          }
+        }
+        if (sampleMasks.length >= 24) {
+          break;
+        }
+      }
 
       const chosen = chooseFontForGlyphs(
         sampleMasks,
-        analysis.inkHeight,
+        lineHeight,
         [...TEXT_FONT_CANDIDATES, ...customFonts],
         analysis.bold ? 700 : 400,
       );
 
       const stack = chosen?.candidate.stack ?? "Helvetica, Arial, sans-serif";
       const weight = chosen?.weight ?? 400;
-      const templates = buildGlyphTemplates(stack, weight, analysis.inkHeight, OCR_CHARACTERS);
-
-      const size = Math.max(8, Math.round(analysis.inkHeight / 0.7));
+      const templates = buildGlyphTemplates(stack, weight, lineHeight, OCR_CHARACTERS);
       const color = toHex(analysis.ink);
 
-      const detected: Field[] = groupIntoLines(glyphBoxes)
+      const detected: Field[] = lines
         .map((line, index) => {
-          const glyphMasks = line.glyphs.map((box) => subMask(mask, box));
+          const glyphMasks = line.glyphs.map((glyph) => subMask(line.mask, glyph));
           const { text, confidence } = transcribeLine(glyphMasks, line.glyphs, templates);
 
           return {
             id: `field-${index}-${Math.round(line.box.y)}`,
-            ...line.box,
+            x: line.box.x,
+            y: line.box.y,
+            width: line.box.width,
+            height: line.box.height,
             text,
             confidence,
-            size,
+            // Measured from real font metrics so the rewrite matches the line.
+            size: sizeForInkHeight("Hp", stack, weight, line.box.height),
             color,
             stack,
             weight,
@@ -1152,7 +1186,7 @@ export default function ImageEditor({
       setTextStyle((current) => ({
         ...current,
         stack,
-        size,
+        size: detected[0]?.size ?? current.size,
         color,
         weight,
         label: chosen?.candidate.label ?? current.label,

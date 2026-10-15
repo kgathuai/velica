@@ -187,6 +187,34 @@ export function loadImage(url: string): Promise<HTMLImageElement> {
 
 import { matchGlyph, OCR_FONT_PROBE, type GlyphTemplate } from "@/lib/ocr";
 
+/**
+ * The font size whose ink is `targetInkHeight` tall. Measured from real metrics
+ * rather than a fixed ratio, because cap heights vary a lot between faces.
+ */
+export function sizeForInkHeight(
+  sample: string,
+  stack: string,
+  weight: number,
+  targetInkHeight: number,
+): number {
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d");
+
+  if (!context || targetInkHeight <= 0) {
+    return Math.max(6, Math.round(targetInkHeight));
+  }
+
+  context.font = `${weight} 100px ${stack}`;
+  const metrics = context.measureText(sample || "Hp");
+  const inkHeight = metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent;
+
+  if (!Number.isFinite(inkHeight) || inkHeight <= 0) {
+    return Math.max(6, Math.round(targetInkHeight));
+  }
+
+  return Math.max(6, Math.round((100 * targetInkHeight) / inkHeight));
+}
+
 /** Rendering the alphabet is not free, so templates are cached per font and size. */
 const templateCache = new Map<string, GlyphTemplate[]>();
 
