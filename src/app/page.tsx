@@ -13,8 +13,10 @@ import {
   FaceIcon,
   ShieldCheckIcon,
   Stepper,
+  UploadIcon,
   cx,
 } from "@/components/ui";
+import UploadTile from "@/components/upload-tile";
 import {
   getSavedProfiles,
   getSavedProfilesServerSnapshot,
@@ -560,7 +562,51 @@ export default function Home() {
 
             {step === 1 && (
               <div className="animate-fade-up">
-                <h2 className="text-sm font-semibold text-slate-100">Tell us about you</h2>
+                <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-4">
+                  <div className="flex items-start gap-3">
+                    <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/30">
+                      <UploadIcon className="h-4 w-4" />
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-semibold text-slate-100">
+                        Already have the photos?
+                      </p>
+                      <p className="mt-0.5 text-xs text-slate-400">
+                        Upload your ID photo and selfie straight from your device — or take them
+                        with the camera on the next step. Either way you can edit them afterwards.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    <UploadTile
+                      label="ID photo"
+                      icon={<IdCardIcon className="h-4 w-4" />}
+                      previewSrc={values.documentImage}
+                      fileName={values.documentName}
+                      onPickFile={(file) => void handleFilePicked("document", file)}
+                      onClear={() => {
+                        setField("documentOriginal", "");
+                        setField("documentImage", "");
+                        setField("documentName", "");
+                      }}
+                    />
+                    <UploadTile
+                      label="Selfie"
+                      icon={<FaceIcon className="h-4 w-4" />}
+                      previewSrc={values.selfieImage}
+                      fileName={values.selfieName}
+                      onPickFile={(file) => void handleFilePicked("selfie", file)}
+                      onClear={() => {
+                        setField("selfieOriginal", "");
+                        setField("selfieImage", "");
+                        setField("selfieName", "");
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <h2 className="mt-6 text-sm font-semibold text-slate-100">Tell us about you</h2>
                 <p className="mt-1 text-xs text-slate-400">
                   Use the details exactly as they appear on your ID.
                 </p>
