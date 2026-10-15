@@ -2,9 +2,17 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CheckIcon, CloseIcon, Spinner, TrashIcon, cx } from "@/components/ui";
-import { rotateAnnotation, type Annotation, type Point } from "@/lib/image-annotations";
+import { buildBaseCanvas, drawAnnotation } from "@/lib/canvas-edits";
+import {
+  flipAnnotation,
+  rotateAnnotation,
+  type Annotation,
+  type EditState,
+  type Point,
+} from "@/lib/image-annotations";
+import { parseEditPrompt } from "@/lib/prompt-edits";
 
-type Tool = "pen" | "highlight" | "text" | "redact";
+type Tool = "pen" | "highlight" | "text" | "redact" | "pixelate" | "blur";
 
 const COLORS = [
   "#ef4444",
@@ -24,6 +32,16 @@ const TOOLS: Array<{ id: Tool; label: string }> = [
   { id: "highlight", label: "Highlight" },
   { id: "text", label: "Text" },
   { id: "redact", label: "Black out" },
+  { id: "pixelate", label: "Pixelate" },
+  { id: "blur", label: "Blur" },
+];
+
+const PROMPT_EXAMPLES = [
+  "rotate right",
+  "black out the bottom",
+  "make it black and white",
+  "pixelate the top right",
+  'add text "COPY" at the top',
 ];
 
 function Icon({ className = "h-4 w-4", children }: { className?: string; children: React.ReactNode }) {
@@ -69,6 +87,19 @@ const RedactIcon = () => (
   </Icon>
 );
 
+const PixelateIcon = () => (
+  <Icon>
+    <path d="M3 3h6v6H3zM15 3h6v6h-6zM3 15h6v6H3zM15 15h6v6h-6z" fill="currentColor" stroke="none" />
+  </Icon>
+);
+
+const BlurIcon = () => (
+  <Icon>
+    <circle cx="12" cy="12" r="8" strokeDasharray="3 3" />
+    <circle cx="12" cy="12" r="4" />
+  </Icon>
+);
+
 const UndoIcon = () => (
   <Icon>
     <path d="M4 8h10a5 5 0 0 1 0 10H8" />
@@ -97,49 +128,7 @@ const RotateRightIcon = () => (
   </Icon>
 );
 
-function drawAnnotation(context: CanvasRenderingContext2D, annotation: Annotation): void {
-  context.save();
-  context.lineCap = "round";
-  context.lineJoin = "round";
-
-  if (annotation.kind === "pen") {
-    context.globalAlpha = annotation.alpha;
-    context.strokeStyle = annotation.color;
-    context.fillStyle = annotation.color;
-    context.lineWidth = annotation.width;
-
-    if (annotation.points.length === 1) {
-      const [point] = annotation.points;
-      context.beginPath();
-      context.arc(point.x, point.y, annotation.width / 2, 0, Math.PI * 2);
-      context.fill();
-    } else {
-      context.beginPath();
-      annotation.points.forEach((point, index) => {
-        if (index === 0) {
-          context.moveTo(point.x, point.y);
-        } else {
-          context.lineTo(point.x, point.y);
-        }
-      });
-      context.stroke();
-    }
-  } else if (annotation.kind === "redact") {
-    context.fillStyle = annotation.color;
-    context.fillRect(annotation.x, annotation.y, annotation.w, annotation.h);
-  } else {
-    context.font = `600 ${annotation.size}px ui-sans-serif, system-ui, -apple-system, sans-serif`;
-    context.textBaseline = "top";
-    // A dark outline keeps the text readable over any photo.
-    context.lineWidth = Math.max(2, annotation.size / 10);
-    context.strokeStyle = "rgba(0, 0, 0, 0.65)";
-    context.strokeText(annotation.text, annotation.x, annotation.y);
-    context.fillStyle = annotation.color;
-    context.fillText(annotation.text, annotation.x, annotation.y);
-  }
-
-  context.restore();
-}
+const EMPTY_STATE: EditState = { baseOps: [], annotations: [] };
 
 export default function ImageEditor({
   title,
@@ -153,7 +142,9 @@ export default function ImageEditor({
   onSave: (dataUrl: string) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const baseCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const originalRef = useRef<HTMLImageElement | null>(null);
+  const baseRef = useRef<HTMLCanvasElement | null>(null);
+  const annotationsRef = useRef<Annotation[]>([]);
   const draftRef = useRef<Annotation | null>(null);
   const frameRef = useRef<number | null>(null);
 
@@ -162,18 +153,24 @@ export default function ImageEditor({
   const [width, setWidth] = useState(WIDTHS[1]);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState("");
+  const [promptText, setPromptText] = useState("");
+  const [promptFeedback, setPromptFeedback] = useState("");
   const [pendingTextAt, setPendingTextAt] = useState<Point | null>(null);
   const [textValue, setTextValue] = useState("");
 
-  /** Whole-list snapshots make undo/redo work uniformly for every tool. */
-  const [history, setHistory] = useState<Annotation[][]>([[]]);
+  /**
+   * History stores the *recipe* (base ops + vectors), never pixels, so undo is
+   * exact and memory stays tiny. The canvas is replayed from the original.
+   */
+  const [history, setHistory] = useState<EditState[]>([EMPTY_STATE]);
   const [historyIndex, setHistoryIndex] = useState(0);
 
-  const annotationsRef = useRef<Annotation[]>([]);
+  const current = history[historyIndex] ?? EMPTY_STATE;
+  const currentBaseOps = current.baseOps;
 
   const redraw = useCallback(() => {
     const canvas = canvasRef.current;
-    const base = baseCanvasRef.current;
+    const base = baseRef.current;
     if (!canvas || !base) {
       return;
     }
@@ -184,14 +181,14 @@ export default function ImageEditor({
     }
 
     context.clearRect(0, 0, canvas.width, canvas.height);
-    context.drawImage(base, 0, 0, canvas.width, canvas.height);
+    context.drawImage(base, 0, 0);
 
     const all = draftRef.current
       ? [...annotationsRef.current, draftRef.current]
       : annotationsRef.current;
 
     for (const annotation of all) {
-      drawAnnotation(context, annotation);
+      drawAnnotation(context, annotation, base);
     }
   }, []);
 
@@ -214,48 +211,26 @@ export default function ImageEditor({
   }, []);
 
   useEffect(() => {
-    annotationsRef.current = history[historyIndex] ?? [];
+    annotationsRef.current = current.annotations;
     scheduleRedraw();
-  }, [history, historyIndex, scheduleRedraw]);
+  }, [current, scheduleRedraw]);
 
-  // Load the capture onto an offscreen canvas at full resolution.
+  // Load the untouched original once; every render is replayed from it.
   useEffect(() => {
     const image = new Image();
     let cancelled = false;
 
     image.onload = () => {
-      if (cancelled) {
-        return;
+      if (!cancelled) {
+        originalRef.current = image;
+        setReady(true);
       }
-
-      const base = document.createElement("canvas");
-      base.width = image.naturalWidth;
-      base.height = image.naturalHeight;
-
-      const context = base.getContext("2d");
-      if (!context) {
-        setError("We couldn't open that image for editing.");
-        return;
-      }
-
-      context.drawImage(image, 0, 0);
-      baseCanvasRef.current = base;
-
-      const canvas = canvasRef.current;
-      if (canvas) {
-        canvas.width = base.width;
-        canvas.height = base.height;
-      }
-
-      setReady(true);
     };
-
     image.onerror = () => {
       if (!cancelled) {
         setError("We couldn't load that image.");
       }
     };
-
     image.src = source;
 
     return () => {
@@ -263,11 +238,24 @@ export default function ImageEditor({
     };
   }, [source]);
 
+  // Replay the recipe whenever the geometry or adjustments change.
   useEffect(() => {
-    if (ready) {
-      redraw();
+    const original = originalRef.current;
+    if (!ready || !original) {
+      return;
     }
-  }, [ready, redraw]);
+
+    const base = buildBaseCanvas(original, currentBaseOps);
+    baseRef.current = base;
+
+    const canvas = canvasRef.current;
+    if (canvas) {
+      canvas.width = base.width;
+      canvas.height = base.height;
+    }
+
+    redraw();
+  }, [ready, currentBaseOps, redraw]);
 
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
@@ -292,11 +280,15 @@ export default function ImageEditor({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [onCancel, pendingTextAt]);
 
-  function commit(next: Annotation[]) {
-    annotationsRef.current = next;
+  function pushState(next: EditState) {
+    annotationsRef.current = next.annotations;
     setHistory((previous) => [...previous.slice(0, historyIndex + 1), next]);
     setHistoryIndex(historyIndex + 1);
     scheduleRedraw();
+  }
+
+  function commitAnnotations(next: Annotation[]) {
+    pushState({ baseOps: current.baseOps, annotations: next });
   }
 
   function undo() {
@@ -305,7 +297,7 @@ export default function ImageEditor({
     }
     const next = historyIndex - 1;
     setHistoryIndex(next);
-    annotationsRef.current = history[next] ?? [];
+    annotationsRef.current = history[next].annotations;
     scheduleRedraw();
   }
 
@@ -315,15 +307,107 @@ export default function ImageEditor({
     }
     const next = historyIndex + 1;
     setHistoryIndex(next);
-    annotationsRef.current = history[next] ?? [];
+    annotationsRef.current = history[next].annotations;
     scheduleRedraw();
   }
 
   function clearAll() {
-    if (annotationsRef.current.length === 0) {
+    pushState(EMPTY_STATE);
+    setPromptFeedback("");
+  }
+
+  function applyPrompt(rawPrompt: string) {
+    const parsed = parseEditPrompt(rawPrompt);
+    if (parsed.operations.length === 0) {
+      setPromptFeedback(parsed.feedback ?? "I didn't understand that.");
       return;
     }
-    commit([]);
+
+    const annotations = [...annotationsRef.current];
+    const baseOps = [...current.baseOps];
+    let { width, height } = baseRef.current ?? { width: 0, height: 0 };
+
+    // Geometry first, tracking dimensions so the annotations stay aligned.
+    for (const operation of parsed.operations) {
+      if (operation.kind === "rotate") {
+        const steps = operation.degrees === 180 ? 2 : 1;
+        const clockwise = operation.degrees !== -90;
+        for (let step = 0; step < steps; step += 1) {
+          for (let index = 0; index < annotations.length; index += 1) {
+            annotations[index] = rotateAnnotation(annotations[index], width, height, clockwise);
+          }
+          [width, height] = [height, width];
+          baseOps.push({ kind: "rotate", clockwise });
+        }
+      } else if (operation.kind === "flip") {
+        for (let index = 0; index < annotations.length; index += 1) {
+          annotations[index] = flipAnnotation(annotations[index], width, height, operation.axis);
+        }
+        baseOps.push({ kind: "flip", axis: operation.axis });
+      }
+    }
+
+    const minEdge = Math.max(1, Math.min(width, height));
+
+    for (const operation of parsed.operations) {
+      if (operation.kind === "adjust") {
+        baseOps.push({ kind: "adjust", patch: operation.patch });
+      } else if (operation.kind === "region") {
+        const x = operation.area.x * width;
+        const y = operation.area.y * height;
+        const w = operation.area.w * width;
+        const h = operation.area.h * height;
+
+        if (operation.effect === "redact") {
+          annotations.push({ kind: "redact", color: operation.color ?? "#000000", x, y, w, h });
+        } else if (operation.effect === "pixelate") {
+          annotations.push({
+            kind: "pixelate",
+            x,
+            y,
+            w,
+            h,
+            size: Math.max(8, Math.round(minEdge * 0.02)),
+          });
+        } else {
+          annotations.push({
+            kind: "blur",
+            x,
+            y,
+            w,
+            h,
+            radius: Math.max(4, Math.round(minEdge * 0.012)),
+          });
+        }
+      } else if (operation.kind === "text") {
+        const area = operation.area ?? { x: 0.04, y: 0.03, w: 0.92, h: 0.1 };
+        annotations.push({
+          kind: "text",
+          color: operation.color ?? "#ffffff",
+          x: area.x * width,
+          y: area.y * height,
+          text: operation.text,
+          size: Math.max(22, Math.round(width * 0.045)),
+        });
+      } else if (operation.kind === "tool") {
+        setTool(operation.tool);
+      }
+    }
+
+    const changed =
+      baseOps.length !== current.baseOps.length ||
+      annotations.length !== annotationsRef.current.length;
+
+    if (changed) {
+      pushState({ baseOps, annotations });
+      setPromptText("");
+    }
+
+    setPromptFeedback(
+      parsed.summary.length > 0
+        ? `Applied: ${parsed.summary.join(" · ")}`
+        : (parsed.feedback ?? ""),
+    );
   }
 
   function toCanvasPoint(event: React.PointerEvent<HTMLCanvasElement>): Point {
@@ -335,6 +419,35 @@ export default function ImageEditor({
     return {
       x: ((event.clientX - rect.left) / rect.width) * canvas.width,
       y: ((event.clientY - rect.top) / rect.height) * canvas.height,
+    };
+  }
+
+  function startBoxAnnotation(point: Point, activeTool: "redact" | "pixelate" | "blur"): Annotation {
+    const minEdge = Math.max(
+      1,
+      Math.min(canvasRef.current?.width ?? 600, canvasRef.current?.height ?? 600),
+    );
+
+    if (activeTool === "redact") {
+      return { kind: "redact", color, x: point.x, y: point.y, w: 0, h: 0 };
+    }
+    if (activeTool === "pixelate") {
+      return {
+        kind: "pixelate",
+        x: point.x,
+        y: point.y,
+        w: 0,
+        h: 0,
+        size: Math.max(8, Math.round(minEdge * 0.02)),
+      };
+    }
+    return {
+      kind: "blur",
+      x: point.x,
+      y: point.y,
+      w: 0,
+      h: 0,
+      radius: Math.max(4, Math.round(minEdge * 0.012)),
     };
   }
 
@@ -353,8 +466,8 @@ export default function ImageEditor({
 
     event.currentTarget.setPointerCapture(event.pointerId);
 
-    if (tool === "redact") {
-      draftRef.current = { kind: "redact", color, x: point.x, y: point.y, w: 0, h: 0 };
+    if (tool === "redact" || tool === "pixelate" || tool === "blur") {
+      draftRef.current = startBoxAnnotation(point, tool);
     } else {
       const isHighlight = tool === "highlight";
       draftRef.current = {
@@ -379,7 +492,7 @@ export default function ImageEditor({
 
     if (draft.kind === "pen") {
       draft.points.push(point);
-    } else if (draft.kind === "redact") {
+    } else if (draft.kind !== "text") {
       draft.w = point.x - draft.x;
       draft.h = point.y - draft.y;
     }
@@ -394,22 +507,22 @@ export default function ImageEditor({
     }
     draftRef.current = null;
 
-    if (draft.kind === "redact") {
-      const x = Math.min(draft.x, draft.x + draft.w);
-      const y = Math.min(draft.y, draft.y + draft.h);
-      const w = Math.abs(draft.w);
-      const h = Math.abs(draft.h);
-
-      if (w < 6 || h < 6) {
-        scheduleRedraw();
-        return;
-      }
-
-      commit([...annotationsRef.current, { ...draft, x, y, w, h }]);
+    if (draft.kind === "pen" || draft.kind === "text") {
+      commitAnnotations([...annotationsRef.current, draft]);
       return;
     }
 
-    commit([...annotationsRef.current, draft]);
+    const x = Math.min(draft.x, draft.x + draft.w);
+    const y = Math.min(draft.y, draft.y + draft.h);
+    const w = Math.abs(draft.w);
+    const h = Math.abs(draft.h);
+
+    if (w < 6 || h < 6) {
+      scheduleRedraw();
+      return;
+    }
+
+    commitAnnotations([...annotationsRef.current, { ...draft, x, y, w, h }]);
   }
 
   function addPendingText() {
@@ -424,42 +537,33 @@ export default function ImageEditor({
 
     const canvas = canvasRef.current;
     const size = canvas ? Math.max(22, Math.round(canvas.width * 0.045)) : 32;
-    commit([...annotationsRef.current, { kind: "text", color, x: point.x, y: point.y, text, size }]);
+    commitAnnotations([...annotationsRef.current, { kind: "text", color, x: point.x, y: point.y, text, size }]);
   }
 
   function rotate(clockwise: boolean) {
-    const canvas = canvasRef.current;
-    const base = baseCanvasRef.current;
-    if (!canvas || !base) {
+    const base = baseRef.current;
+    if (!base) {
       return;
     }
 
-    const rotated = document.createElement("canvas");
-    rotated.width = base.height;
-    rotated.height = base.width;
-
-    const context = rotated.getContext("2d");
-    if (!context) {
-      return;
-    }
-
-    context.translate(rotated.width / 2, rotated.height / 2);
-    context.rotate(clockwise ? Math.PI / 2 : -Math.PI / 2);
-    context.drawImage(base, -base.width / 2, -base.height / 2);
-
-    const remapped = annotationsRef.current.map((annotation) =>
+    const annotations = annotationsRef.current.map((annotation) =>
       rotateAnnotation(annotation, base.width, base.height, clockwise),
     );
 
-    baseCanvasRef.current = rotated;
-    canvas.width = rotated.width;
-    canvas.height = rotated.height;
+    pushState({ baseOps: [...current.baseOps, { kind: "rotate", clockwise }], annotations });
+  }
 
-    // Rotating re-bases the canvas, so the history starts fresh from here.
-    annotationsRef.current = remapped;
-    setHistory([remapped]);
-    setHistoryIndex(0);
-    scheduleRedraw();
+  function flip(axis: "horizontal" | "vertical") {
+    const base = baseRef.current;
+    if (!base) {
+      return;
+    }
+
+    const annotations = annotationsRef.current.map((annotation) =>
+      flipAnnotation(annotation, base.width, base.height, axis),
+    );
+
+    pushState({ baseOps: [...current.baseOps, { kind: "flip", axis }], annotations });
   }
 
   function handleSave() {
@@ -475,7 +579,14 @@ export default function ImageEditor({
 
   const canUndo = historyIndex > 0;
   const canRedo = historyIndex < history.length - 1;
-  const hasEdits = (history[historyIndex]?.length ?? 0) > 0;
+  const hasEdits = current.annotations.length > 0 || current.baseOps.length > 0;
+
+  const toolHint =
+    tool === "text"
+      ? "Tap the photo to place your text."
+      : tool === "pen" || tool === "highlight"
+        ? "Draw straight on the photo."
+        : "Drag over the area you want to cover.";
 
   return (
     <div
@@ -487,13 +598,7 @@ export default function ImageEditor({
       <header className="flex items-center justify-between gap-3 px-4 pt-4 sm:px-6">
         <div>
           <h2 className="text-base font-semibold text-white">{title}</h2>
-          <p className="mt-0.5 text-xs text-slate-400">
-            {tool === "text"
-              ? "Tap the photo to place your text."
-              : tool === "redact"
-                ? "Drag over anything you want to black out."
-                : "Draw straight on the photo."}
-          </p>
+          <p className="mt-0.5 text-xs text-slate-400">{toolHint}</p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <button type="button" onClick={onCancel} className="btn btn-ghost !px-3 !py-2 text-xs">
@@ -519,7 +624,7 @@ export default function ImageEditor({
             onPointerMove={handlePointerMove}
             onPointerUp={handlePointerUp}
             onPointerCancel={handlePointerUp}
-            className="max-h-[52vh] max-w-full touch-none rounded-xl border border-slate-700 bg-black sm:max-h-[58vh]"
+            className="max-h-[40vh] max-w-full touch-none rounded-xl border border-slate-700 bg-black sm:max-h-[48vh]"
             style={{ touchAction: "none" }}
           />
           {!ready && !error && (
@@ -571,7 +676,49 @@ export default function ImageEditor({
       )}
 
       <div className="border-t border-slate-800 px-3 pb-5 pt-3 sm:px-6">
-        <div className="flex items-center gap-2 overflow-x-auto pb-1">
+        <form
+          className="flex gap-2"
+          onSubmit={(event) => {
+            event.preventDefault();
+            applyPrompt(promptText);
+          }}
+        >
+          <input
+            className="field !py-2.5"
+            placeholder='Describe a change — e.g. "black out the bottom"'
+            value={promptText}
+            aria-label="Describe a change to the image"
+            onChange={(event) => setPromptText(event.target.value)}
+          />
+          <button
+            type="submit"
+            disabled={!ready || promptText.trim().length === 0}
+            className="btn btn-primary shrink-0 !px-4 !py-2.5 text-xs"
+          >
+            Apply
+          </button>
+        </form>
+
+        <div className="mt-2 flex items-center gap-1.5 overflow-x-auto pb-1">
+          {PROMPT_EXAMPLES.map((example) => (
+            <button
+              key={example}
+              type="button"
+              onClick={() => applyPrompt(example)}
+              className="shrink-0 rounded-full border border-slate-700 bg-slate-900/60 px-2.5 py-1 text-[11px] text-slate-400 transition hover:border-sky-500/50 hover:text-sky-300"
+            >
+              {example}
+            </button>
+          ))}
+        </div>
+
+        {promptFeedback && (
+          <p className="mt-1.5 text-[11px] text-sky-300" role="status">
+            {promptFeedback}
+          </p>
+        )}
+
+        <div className="mt-3 flex items-center gap-2 overflow-x-auto pb-1">
           {TOOLS.map((item) => (
             <button
               key={item.id}
@@ -589,6 +736,8 @@ export default function ImageEditor({
               {item.id === "highlight" && <HighlightIcon />}
               {item.id === "text" && <TextIcon />}
               {item.id === "redact" && <RedactIcon />}
+              {item.id === "pixelate" && <PixelateIcon />}
+              {item.id === "blur" && <BlurIcon />}
               {item.label}
             </button>
           ))}
@@ -631,6 +780,14 @@ export default function ImageEditor({
           </button>
           <button
             type="button"
+            onClick={() => flip("horizontal")}
+            aria-label="Flip horizontally"
+            className="btn btn-secondary h-9 shrink-0 !px-2.5 text-[11px]"
+          >
+            Flip
+          </button>
+          <button
+            type="button"
             onClick={clearAll}
             disabled={!hasEdits}
             aria-label="Clear all edits"
@@ -651,7 +808,7 @@ export default function ImageEditor({
                 aria-pressed={color === value}
                 className={cx(
                   "h-7 w-7 rounded-full border-2 transition",
-                  color === value ? "border-sky-400 scale-110" : "border-slate-600",
+                  color === value ? "scale-110 border-sky-400" : "border-slate-600",
                 )}
                 style={{ backgroundColor: value }}
               />

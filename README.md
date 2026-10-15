@@ -79,6 +79,35 @@ Then, with the phone on the same Wi-Fi:
 > For production mode, or to reach the app from outside your network, put it behind
 > `tailscale serve` (real certificate, no trust steps) or a local `caddy` reverse proxy.
 
+## Editing captured photos
+
+Each photo has an **Edit** button that opens a full-screen editor. The original is never
+overwritten — both versions are kept on disk and you can revert at any time.
+
+Manual tools: draw, highlight, text, black out, pixelate, blur, plus undo/redo, rotate and flip.
+
+You can also type an instruction and press **Apply**. The prompt is interpreted **on the
+device**: there is no model and no network call, so nothing about your documents leaves the
+machine, and it works offline.
+
+| Say this | Result |
+| --- | --- |
+| `rotate left` / `rotate right` / `turn it upside down` | quarter or half turn |
+| `flip horizontally` / `mirror it` / `flip vertically` | mirror the image |
+| `black out the bottom` / `white out the top third` | cover a region |
+| `pixelate the top right` / `blur the middle` | mosaic or blur a region |
+| `add text "COPY" at the top` | place a label |
+| `make it black and white` / `sepia` / `invert` | colour treatments |
+| `brighten it` / `darker` / `more contrast` / `more colourful` | adjustments |
+
+Regions are described by position — `top`, `bottom`, `left`, `right`, `middle`, corners — and
+sizes like `half`, `third`, `top 20%`. If you name a redaction without saying where, the editor
+hands you the tool so you can drag over the area yourself. Each prompt counts as one undo step.
+
+> Browser note: the colour adjustments are done with a pixel pass rather than
+> `CanvasRenderingContext2D.filter`, because Safari ([including iOS](https://caniuse.com/mdn-api_canvasrenderingcontext2d_filter))
+> does not support canvas filters.
+
 ## API Endpoints
 
 - `POST /api/verify/start`
