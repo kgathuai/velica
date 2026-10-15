@@ -1,6 +1,16 @@
-# Velica Verify
+# Velica
 
-Document verification MVP with a two-layer identity workflow and Qwen2.5-VL-72B extraction.
+Scan, save and edit documents — with an optional two-layer identity verification flow.
+
+## The app has two tabs
+
+| Tab | Route | What it does |
+| --- | --- | --- |
+| **Documents** | `/` | The primary function: photograph a document, it is saved on the device, and it opens straight in the editor. A grid of your saved scans, each editable and deletable. |
+| **Verify identity** | `/verify` | The identity workflow: applicant details, ID photo and selfie, then the two-layer check below. |
+
+Scans on the Documents tab never leave the phone — they are stored in the browser's
+IndexedDB, so they work with the Mac switched off. The verification tab does use the server.
 
 ## Verification Flow
 
@@ -41,13 +51,20 @@ Open `http://localhost:3000` (or the next available port shown in terminal).
 
 ## Where documents are saved
 
-Captures are stored on the machine running the server, one folder per verification:
+**Scans (Documents tab)** live on the device, in the browser's IndexedDB (`velica-documents`).
+Each scan keeps the untouched `original` blob, an optional `edited` blob, and a small data-URL
+thumbnail for the grid. Nothing is uploaded, and they survive without the server running.
+
+**Verification records (`/verify` tab)** are stored on the machine running the server, one
+folder per verification:
 
 ```
 .data/records/<verification-id>/
-├── record.json    applicant details, layer outcomes, audit trail
-├── document.jpg   the untouched capture
-└── selfie.jpg
+├── record.json            applicant details, layer outcomes, audit trail
+├── document.jpg           the untouched capture
+├── document-edited.jpg    the annotated version, when edited
+├── selfie.jpg
+└── selfie-edited.jpg
 ```
 
 The image extension follows the original format (`jpg`, `png`, `webp`, …). Nothing is

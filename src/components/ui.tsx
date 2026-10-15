@@ -182,6 +182,15 @@ export function CopyIcon(props: IconProps) {
   );
 }
 
+export function PencilIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M4 20h4L20 8a2.8 2.8 0 0 0-4-4L4 16v4Z" />
+      <path d="m14 6 4 4" />
+    </Icon>
+  );
+}
+
 export function Spinner({ className }: { className?: string }) {
   return (
     <svg

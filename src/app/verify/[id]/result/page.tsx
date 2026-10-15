@@ -289,7 +289,7 @@ export default function VerificationResultPage() {
             Watch progress
           </Link>
         )}
-        <Link href="/" className="btn btn-primary sm:flex-1">
+        <Link href="/verify" className="btn btn-primary sm:flex-1">
           Start a new verification
           <ArrowRightIcon className="h-4 w-4" />
         </Link>
