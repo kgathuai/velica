@@ -36,16 +36,24 @@ const hosts = [...addresses, "localhost", "127.0.0.1"];
 
 mkdirSync(directory, { recursive: true });
 
+// Trusting the CA on this Mac needs sudo, which cannot prompt from a script.
+// That is not fatal: the phone only needs the rootCA.pem file itself.
 try {
-  console.log("Installing the local certificate authority (only needs doing once)…");
+  console.log("Trusting the local certificate authority on this Mac…");
   execFileSync("mkcert", ["-install"], { stdio: "inherit" });
-
-  console.log(`\nIssuing a certificate for: ${hosts.join(", ")}`);
-  execFileSync(
-    "mkcert",
-    ["-key-file", keyFile, "-cert-file", certFile, ...hosts],
-    { stdio: "inherit" },
+} catch {
+  console.warn(
+    "\n! Could not trust the certificate on this Mac — that step needs your password.",
   );
+  console.warn("  The phone does not need it. To also use the app from this Mac, run:");
+  console.warn("\n    mkcert -install\n");
+}
+
+try {
+  console.log(`Issuing a certificate for: ${hosts.join(", ")}`);
+  execFileSync("mkcert", ["-key-file", keyFile, "-cert-file", certFile, ...hosts], {
+    stdio: "inherit",
+  });
 } catch (error) {
   if (error && error.code === "ENOENT") {
     console.error("\nmkcert is not installed. Install it first:\n\n  brew install mkcert\n");
@@ -60,13 +68,16 @@ console.log(`\nCertificate written to ${certFile}`);
 try {
   const caRoot = execFileSync("mkcert", ["-CAROOT"], { encoding: "utf8" }).trim();
   console.log(
-    `\nTo trust it on your phone, send this file over:\n  ${path.join(caRoot, "rootCA.pem")}`,
+    `\nSend this file to your phone and trust it there:\n  ${path.join(caRoot, "rootCA.pem")}`,
   );
+  console.log("  iOS:     Settings > Profile Downloaded > Install, then Settings > General >");
+  console.log("           About > Certificate Trust Settings > enable full trust for mkcert.");
+  console.log("  Android: Settings > Security > Encryption & credentials > Install a certificate.");
 } catch {
   // Not fatal — the path can be printed with `mkcert -CAROOT` manually.
 }
 
 console.log("\nStart the server with:\n\n  npm run dev:https\n");
 for (const address of addresses) {
-  console.log(`Then open on your phone:  https://${address}:3000`);
+  console.log(`Then open on your phone:  https://${address}:3443`);
 }

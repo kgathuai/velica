@@ -568,12 +568,10 @@ export default function Home() {
                       <UploadIcon className="h-4 w-4" />
                     </span>
                     <div className="min-w-0 flex-1">
-                      <p className="text-sm font-semibold text-slate-100">
-                        Already have the photos?
-                      </p>
+                      <p className="text-sm font-semibold text-slate-100">Add your photos</p>
                       <p className="mt-0.5 text-xs text-slate-400">
-                        Upload your ID photo and selfie straight from your device — or take them
-                        with the camera on the next step. Either way you can edit them afterwards.
+                        Take them with the camera or upload from your device. You can also do this
+                        on the next step, and edit either version afterwards.
                       </p>
                     </div>
                   </div>
@@ -584,6 +582,7 @@ export default function Home() {
                       icon={<IdCardIcon className="h-4 w-4" />}
                       previewSrc={values.documentImage}
                       fileName={values.documentName}
+                      onOpenCamera={() => setScannerTarget("document")}
                       onPickFile={(file) => void handleFilePicked("document", file)}
                       onClear={() => {
                         setField("documentOriginal", "");
@@ -596,6 +595,7 @@ export default function Home() {
                       icon={<FaceIcon className="h-4 w-4" />}
                       previewSrc={values.selfieImage}
                       fileName={values.selfieName}
+                      onOpenCamera={() => setScannerTarget("selfie")}
                       onPickFile={(file) => void handleFilePicked("selfie", file)}
                       onClear={() => {
                         setField("selfieOriginal", "");

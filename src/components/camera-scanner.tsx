@@ -1,7 +1,17 @@
 "use client";
 
+/* eslint-disable @next/next/no-img-element -- the review preview is an in-memory object URL, which next/image cannot optimise */
+
 import { useEffect, useRef, useState } from "react";
-import { CameraIcon, CloseIcon, RefreshIcon, Spinner, UploadIcon } from "@/components/ui";
+import {
+  CameraIcon,
+  CheckIcon,
+  CloseIcon,
+  RefreshIcon,
+  Spinner,
+  UploadIcon,
+  cx,
+} from "@/components/ui";
 
 type CameraFacing = "user" | "environment";
 
@@ -35,6 +45,8 @@ export default function CameraScanner({
   const [capturing, setCapturing] = useState(false);
   const [frameSize, setFrameSize] = useState("");
   const [error, setError] = useState("");
+  /** Held for review before it is handed to the form. */
+  const [shot, setShot] = useState<{ file: File; url: string } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -114,13 +126,26 @@ export default function CameraScanner({
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
+      if (event.key !== "Escape") {
+        return;
+      }
+      if (shot) {
+        setShot(null);
+      } else {
         onClose();
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onClose]);
+  }, [onClose, shot]);
+
+  // Release the preview URL whenever the shot is replaced or the scanner closes.
+  useEffect(() => {
+    if (!shot) {
+      return;
+    }
+    return () => URL.revokeObjectURL(shot.url);
+  }, [shot]);
 
   function handleFlipCamera() {
     setReady(false);
@@ -161,12 +186,25 @@ export default function CameraScanner({
           return;
         }
 
-        onCapture(new File([blob], `original-${Date.now()}.jpg`, { type: "image/jpeg" }));
-        window.setTimeout(() => setCapturing(false), 900);
+        // Hold the shot for review rather than saving it straight away.
+        const file = new File([blob], `original-${Date.now()}.jpg`, { type: "image/jpeg" });
+        setShot({ file, url: URL.createObjectURL(file) });
+        setCapturing(false);
       },
       "image/jpeg",
       0.95,
     );
+  }
+
+  function retake() {
+    setError("");
+    setShot(null);
+  }
+
+  function useShot() {
+    if (shot) {
+      onCapture(shot.file);
+    }
   }
 
   return (
@@ -178,9 +216,15 @@ export default function CameraScanner({
     >
       <header className="flex items-start justify-between gap-3 px-4 pt-4 sm:px-6">
         <div>
-          <h2 className="text-base font-semibold text-white">{title}</h2>
-          <p className="mt-0.5 max-w-sm text-xs text-slate-400">{hint}</p>
-          {ready && (
+          <h2 className="text-base font-semibold text-white">
+            {shot ? "Check your photo" : title}
+          </h2>
+          <p className="mt-0.5 max-w-sm text-xs text-slate-400">
+            {shot
+              ? "Make sure it's sharp, well lit and everything you need is visible."
+              : hint}
+          </p>
+          {!shot && ready && (
             <p className="mt-1 text-[11px] text-emerald-300/90">
               Original kept{frameSize ? ` · ${frameSize}` : ""} · nothing is cropped
             </p>
@@ -198,9 +242,13 @@ export default function CameraScanner({
 
       <div className="flex flex-1 items-center justify-center px-4 py-4">
         <div className="relative flex min-h-[240px] w-full max-w-xl items-center justify-center overflow-hidden rounded-2xl border border-slate-700 bg-black">
+          {/* Kept mounted while reviewing, so the stream stays live and Retake is instant. */}
           <video
             ref={videoRef}
-            className="block max-h-[62vh] w-full bg-black object-contain"
+            className={cx(
+              "block max-h-[62vh] w-full bg-black object-contain",
+              shot && "invisible",
+            )}
             muted
             playsInline
             onLoadedMetadata={(event) => {
@@ -212,29 +260,39 @@ export default function CameraScanner({
             onPlaying={() => setReady(true)}
           />
 
-          {!ready && (
-            <div className="absolute inset-0 grid place-items-center bg-slate-950/80">
-              <span className="flex items-center gap-2 text-xs text-slate-300">
-                <Spinner className="h-4 w-4" />
-                Starting camera…
-              </span>
-            </div>
-          )}
-
-          {capturing && <span className="animate-flash absolute inset-0 bg-white" />}
-
-          {/* Composition guide: where to place the subject. The whole frame is saved. */}
-          <div className="pointer-events-none absolute inset-0 grid place-items-center p-5">
-            <div
-              className="h-3/4 max-w-full rounded-xl border-2 border-dashed border-white/45"
-              style={{ aspectRatio: `${aspectRatio}` }}
+          {shot ? (
+            <img
+              src={shot.url}
+              alt="The photo you just took"
+              className="absolute inset-0 h-full w-full object-contain"
             />
-          </div>
+          ) : (
+            <>
+              {!ready && (
+                <div className="absolute inset-0 grid place-items-center bg-slate-950/80">
+                  <span className="flex items-center gap-2 text-xs text-slate-300">
+                    <Spinner className="h-4 w-4" />
+                    Starting camera…
+                  </span>
+                </div>
+              )}
 
-          <span className="pointer-events-none absolute left-3 top-3 h-7 w-7 rounded-tl-lg border-l-2 border-t-2 border-sky-300/90" />
-          <span className="pointer-events-none absolute right-3 top-3 h-7 w-7 rounded-tr-lg border-r-2 border-t-2 border-sky-300/90" />
-          <span className="pointer-events-none absolute bottom-3 left-3 h-7 w-7 rounded-bl-lg border-b-2 border-l-2 border-sky-300/90" />
-          <span className="pointer-events-none absolute bottom-3 right-3 h-7 w-7 rounded-br-lg border-b-2 border-r-2 border-sky-300/90" />
+              {capturing && <span className="animate-flash absolute inset-0 bg-white" />}
+
+              {/* Composition guide: where to place the subject. The whole frame is saved. */}
+              <div className="pointer-events-none absolute inset-0 grid place-items-center p-5">
+                <div
+                  className="h-3/4 max-w-full rounded-xl border-2 border-dashed border-white/45"
+                  style={{ aspectRatio: `${aspectRatio}` }}
+                />
+              </div>
+
+              <span className="pointer-events-none absolute left-3 top-3 h-7 w-7 rounded-tl-lg border-l-2 border-t-2 border-sky-300/90" />
+              <span className="pointer-events-none absolute right-3 top-3 h-7 w-7 rounded-tr-lg border-r-2 border-t-2 border-sky-300/90" />
+              <span className="pointer-events-none absolute bottom-3 left-3 h-7 w-7 rounded-bl-lg border-b-2 border-l-2 border-sky-300/90" />
+              <span className="pointer-events-none absolute bottom-3 right-3 h-7 w-7 rounded-br-lg border-b-2 border-r-2 border-sky-300/90" />
+            </>
+          )}
         </div>
       </div>
 
@@ -244,41 +302,54 @@ export default function CameraScanner({
         </p>
       )}
 
-      <footer className="flex items-center justify-between gap-4 px-8 pb-8 pt-2">
-        <button
-          type="button"
-          onClick={handleFlipCamera}
-          className="btn btn-secondary h-11 w-11 rounded-full !px-0"
-          aria-label="Switch between front and back camera"
-        >
-          <RefreshIcon className="h-5 w-5" />
-        </button>
+      {shot ? (
+        <footer className="flex items-center gap-3 px-6 pb-8 pt-2">
+          <button type="button" onClick={retake} className="btn btn-secondary flex-1">
+            <RefreshIcon className="h-4 w-4" />
+            Retake
+          </button>
+          <button type="button" onClick={useShot} className="btn btn-primary flex-1">
+            <CheckIcon className="h-4 w-4" />
+            Use this photo
+          </button>
+        </footer>
+      ) : (
+        <footer className="flex items-center justify-between gap-4 px-8 pb-8 pt-2">
+          <button
+            type="button"
+            onClick={handleFlipCamera}
+            className="btn btn-secondary h-11 w-11 rounded-full !px-0"
+            aria-label="Switch between front and back camera"
+          >
+            <RefreshIcon className="h-5 w-5" />
+          </button>
 
-        <button
-          type="button"
-          onClick={handleCapture}
-          disabled={!ready || capturing}
-          className="grid h-16 w-16 place-items-center rounded-full bg-white text-slate-900 shadow-2xl transition active:scale-95 disabled:opacity-40"
-          aria-label="Take photo"
-        >
-          {capturing ? (
-            <Spinner className="h-6 w-6" />
-          ) : (
-            <span className="grid h-12 w-12 place-items-center rounded-full border-4 border-slate-900/80">
-              <CameraIcon className="h-5 w-5" />
-            </span>
-          )}
-        </button>
+          <button
+            type="button"
+            onClick={handleCapture}
+            disabled={!ready || capturing}
+            className="grid h-16 w-16 place-items-center rounded-full bg-white text-slate-900 shadow-2xl transition active:scale-95 disabled:opacity-40"
+            aria-label="Take photo"
+          >
+            {capturing ? (
+              <Spinner className="h-6 w-6" />
+            ) : (
+              <span className="grid h-12 w-12 place-items-center rounded-full border-4 border-slate-900/80">
+                <CameraIcon className="h-5 w-5" />
+              </span>
+            )}
+          </button>
 
-        <button
-          type="button"
-          onClick={() => fileInputRef.current?.click()}
-          className="btn btn-secondary h-11 w-11 rounded-full !px-0"
-          aria-label="Upload a photo instead"
-        >
-          <UploadIcon className="h-5 w-5" />
-        </button>
-      </footer>
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="btn btn-secondary h-11 w-11 rounded-full !px-0"
+            aria-label="Upload a photo instead"
+          >
+            <UploadIcon className="h-5 w-5" />
+          </button>
+        </footer>
+      )}
 
       <input
         ref={fileInputRef}

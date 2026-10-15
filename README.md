@@ -61,12 +61,13 @@ so `http://<your-ip>:3000` will refuse to open the scanner. Serve it over HTTPS:
 ```bash
 brew install mkcert
 npm run certs      # issues a locally trusted certificate for this Mac's LAN address
-npm run dev:https  # serves HTTPS on 0.0.0.0:3000
+npm run dev:https  # serves HTTPS on 0.0.0.0:3443
 ```
 
 Then, with the phone on the same Wi-Fi:
 
-1. Open `https://<your-ip>:3000` — `npm run certs` prints the exact URL.
+1. Open `https://<your-ip>:3443` — `npm run certs` prints the exact URL.
+   (Port 3443, not 3000, so it never collides with another dev server.)
 2. Trust the mkcert root certificate, otherwise the browser blocks the connection:
    - Send `rootCA.pem` (from `mkcert -CAROOT`) to the phone.
    - **iOS:** Settings → Profile Downloaded → Install, then Settings → General → About →
