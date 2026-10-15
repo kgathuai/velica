@@ -1,36 +1,28 @@
 import { NextResponse } from "next/server";
+import {
+  editModel,
+  NOT_CONFIGURED_MESSAGE,
+  parseDataUrl,
+  resolveProvider,
+  type AiProvider,
+  type ParsedImage,
+} from "@/lib/services/ai-provider";
 
 /**
- * Prompt-driven image editing through an image model. This is the one feature
- * that cannot work offline, so it is opt-in: without IMAGE_EDIT_API_KEY the
- * route explains what to set rather than failing obscurely.
- *
- * Works with either shape:
- *   - Google Gemini native  (generativelanguage.googleapis.com)
- *   - any OpenAI-compatible chat endpoint that can return images
+ * Prompt-driven image editing through an image model — the one feature that
+ * cannot work offline. Works with Google Gemini natively, or any
+ * OpenAI-compatible endpoint that can return images.
  */
 
-const DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
-const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash-image";
-const DEFAULT_OPENAI_MODEL = "google/gemini-2.5-flash-image-preview";
-
-type ParsedImage = { mimeType: string; base64: string };
-
-function parseDataUrl(value: string): ParsedImage | null {
-  const match = /^data:([^;,]+);base64,([\s\S]*)$/i.exec(value);
-  return match ? { mimeType: match[1], base64: match[2] } : null;
-}
-
 async function editWithGemini(
-  baseUrl: string,
+  provider: AiProvider,
   model: string,
-  apiKey: string,
   prompt: string,
   image: ParsedImage,
 ): Promise<string | null> {
-  const response = await fetch(`${baseUrl}/models/${model}:generateContent`, {
+  const response = await fetch(`${provider.baseUrl}/models/${model}:generateContent`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+    headers: { "Content-Type": "application/json", "x-goog-api-key": provider.apiKey },
     body: JSON.stringify({
       contents: [
         {
@@ -70,17 +62,16 @@ async function editWithGemini(
 }
 
 async function editOpenAiCompatible(
-  baseUrl: string,
+  provider: AiProvider,
   model: string,
-  apiKey: string,
   prompt: string,
   dataUrl: string,
 ): Promise<string | null> {
-  const response = await fetch(`${baseUrl}/chat/completions`, {
+  const response = await fetch(`${provider.baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
+      Authorization: `Bearer ${provider.apiKey}`,
     },
     body: JSON.stringify({
       model,
@@ -111,30 +102,23 @@ async function editOpenAiCompatible(
 
   const message = payload.choices?.[0]?.message;
 
-  // OpenRouter-style: the image is a separate part on the message.
+  // OpenRouter-style: the image arrives as its own part on the message.
   const firstImage = message?.images?.[0]?.image_url?.url;
   if (firstImage) {
     return firstImage;
   }
 
-  // Others inline the image as markdown inside the text.
+  // Others inline it as markdown inside the text.
   const content = typeof message?.content === "string" ? message.content : "";
   const match = /data:image\/[a-z0-9+.-]+;base64,[A-Za-z0-9+/=]+/i.exec(content);
   return match ? match[0] : null;
 }
 
 export async function POST(request: Request) {
-  const apiKey = process.env.IMAGE_EDIT_API_KEY;
+  const provider = resolveProvider();
 
-  if (!apiKey) {
-    return NextResponse.json(
-      {
-        error:
-          "AI editing isn't set up yet. Add IMAGE_EDIT_API_KEY (and optionally IMAGE_EDIT_MODEL) " +
-          "to .env.local, then restart the server. See the README.",
-      },
-      { status: 503 },
-    );
+  if (!provider) {
+    return NextResponse.json({ error: NOT_CONFIGURED_MESSAGE }, { status: 503 });
   }
 
   let body: { image?: string; prompt?: string };
@@ -154,20 +138,17 @@ export async function POST(request: Request) {
     );
   }
 
-  const parsed = parseDataUrl(dataUrl);
-  if (!parsed) {
+  const image = parseDataUrl(dataUrl);
+  if (!image) {
     return NextResponse.json({ error: "The image must be a data URL." }, { status: 400 });
   }
 
-  const baseUrl = (process.env.IMAGE_EDIT_BASE_URL ?? DEFAULT_GEMINI_BASE_URL).replace(/\/$/, "");
-  const isGemini = baseUrl.includes("generativelanguage.googleapis.com");
-  const model =
-    process.env.IMAGE_EDIT_MODEL ?? (isGemini ? DEFAULT_GEMINI_MODEL : DEFAULT_OPENAI_MODEL);
+  const model = editModel(provider);
 
   try {
-    const result = isGemini
-      ? await editWithGemini(baseUrl, model, apiKey, prompt, parsed)
-      : await editOpenAiCompatible(baseUrl, model, apiKey, prompt, dataUrl);
+    const result = provider.isGemini
+      ? await editWithGemini(provider, model, prompt, image)
+      : await editOpenAiCompatible(provider, model, prompt, dataUrl);
 
     if (!result) {
       return NextResponse.json(

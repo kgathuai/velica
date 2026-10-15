@@ -103,6 +103,42 @@ export function medianLineHeight(boxes: GlyphBox[]): number {
   return heights[Math.floor(heights.length / 2)];
 }
 
+/**
+ * Converts a `[ymin, xmin, ymax, xmax]` box on a 0-1000 scale — what vision
+ * models return — into pixels. Models read far better than they localise, so
+ * anything implausible is rejected and the caller falls back to local detection.
+ */
+export function boxFromNormalized(
+  raw: unknown,
+  width: number,
+  height: number,
+): GlyphBox | null {
+  if (!Array.isArray(raw) || raw.length !== 4) {
+    return null;
+  }
+
+  const numbers = raw.map((entry) => Number(entry));
+  if (!numbers.every((entry) => Number.isFinite(entry))) {
+    return null;
+  }
+
+  const [ymin, xmin, ymax, xmax] = numbers;
+  if (ymax <= ymin || xmax <= xmin) {
+    return null;
+  }
+
+  const x = (xmin / 1000) * width;
+  const y = (ymin / 1000) * height;
+  const w = ((xmax - xmin) / 1000) * width;
+  const h = ((ymax - ymin) / 1000) * height;
+
+  if (w < 4 || h < 4 || x < 0 || y < 0) {
+    return null;
+  }
+
+  return { x, y, width: w, height: h };
+}
+
 /** best character for one glyph, by shape overlap. */
 export function matchGlyph(
   glyph: Mask,

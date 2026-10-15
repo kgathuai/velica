@@ -33,7 +33,13 @@ import {
   OCR_CHARACTERS,
   sizeForInkHeight,
 } from "@/lib/font-render";
-import { maskHasInk, medianLineHeight, segmentLines, transcribeLine } from "@/lib/ocr";
+import {
+  boxFromNormalized,
+  maskHasInk,
+  medianLineHeight,
+  segmentLines,
+  transcribeLine,
+} from "@/lib/ocr";
 import { parseEditPrompt } from "@/lib/prompt-edits";
 
 type Tool =
@@ -67,6 +73,8 @@ type Field = {
   height: number;
   text: string;
   confidence: number;
+  /** "ai" when a vision model transcribed it, "local" for shape matching. */
+  source: "ai" | "local";
   size: number;
   color: string;
   stack: string;
@@ -1155,31 +1163,91 @@ export default function ImageEditor({
 
       const stack = chosen?.candidate.stack ?? "Helvetica, Arial, sans-serif";
       const weight = chosen?.weight ?? 400;
-      const templates = buildGlyphTemplates(stack, weight, lineHeight, OCR_CHARACTERS);
       const color = toHex(analysis.ink);
 
-      const detected: Field[] = lines
-        .map((line, index) => {
-          const glyphMasks = line.glyphs.map((glyph) => subMask(line.mask, glyph));
-          const { text, confidence } = transcribeLine(glyphMasks, line.glyphs, templates);
+      // A vision model reads far more accurately than shape matching, so ask it
+      // first. The geometry above is still what places text back on the page.
+      let aiLines: Array<{ text: string; box?: unknown }> | null = null;
+      let aiModel = "";
 
-          return {
-            id: `field-${index}-${Math.round(line.box.y)}`,
-            x: line.box.x,
-            y: line.box.y,
-            width: line.box.width,
-            height: line.box.height,
-            text,
-            confidence,
-            // Measured from real font metrics so the rewrite matches the line.
-            size: sizeForInkHeight("Hp", stack, weight, line.box.height),
-            color,
-            stack,
-            weight,
+      try {
+        const response = await fetch("/api/read", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ image: base.toDataURL("image/jpeg", 0.9) }),
+        });
+
+        if (response.ok) {
+          const payload = (await response.json()) as {
+            lines?: Array<{ text: string; box?: unknown }>;
+            model?: string;
           };
-        })
-        .filter((field) => field.text.replace(/[^A-Za-z0-9]/g, "").length >= 2)
-        .sort((a, b) => a.y - b.y);
+
+          if (payload.lines && payload.lines.length > 0) {
+            aiLines = payload.lines;
+            aiModel = payload.model ?? "";
+          }
+        }
+      } catch {
+        // Offline or no key — the local reader below handles it.
+      }
+
+      let detected: Field[];
+
+      if (aiLines) {
+        detected = aiLines
+          .map((line, index): Field | null => {
+            const box =
+              boxFromNormalized(line.box, base.width, base.height) ?? lines[index]?.box ?? null;
+            if (!box) {
+              return null;
+            }
+
+            return {
+              id: `field-${index}-${Math.round(box.y)}`,
+              x: box.x,
+              y: box.y,
+              width: box.width,
+              height: box.height,
+              text: line.text,
+              confidence: 1,
+              source: "ai",
+              size: sizeForInkHeight("Hp", stack, weight, box.height),
+              color,
+              stack,
+              weight,
+            };
+          })
+          .filter((field): field is Field => field !== null)
+          .filter((field) => field.text.trim().length > 0)
+          .sort((a, b) => a.y - b.y);
+      } else {
+        const templates = buildGlyphTemplates(stack, weight, lineHeight, OCR_CHARACTERS);
+
+        detected = lines
+          .map((line, index) => {
+            const glyphMasks = line.glyphs.map((glyph) => subMask(line.mask, glyph));
+            const { text, confidence } = transcribeLine(glyphMasks, line.glyphs, templates);
+
+            return {
+              id: `field-${index}-${Math.round(line.box.y)}`,
+              x: line.box.x,
+              y: line.box.y,
+              width: line.box.width,
+              height: line.box.height,
+              text,
+              confidence,
+              source: "local" as const,
+              // Measured from real font metrics so the rewrite matches the line.
+              size: sizeForInkHeight("Hp", stack, weight, line.box.height),
+              color,
+              stack,
+              weight,
+            };
+          })
+          .filter((field) => field.text.replace(/[^A-Za-z0-9]/g, "").length >= 2)
+          .sort((a, b) => a.y - b.y);
+      }
 
       setFields(detected);
       setMode("fields");
@@ -1193,9 +1261,11 @@ export default function ImageEditor({
       }));
 
       setPromptFeedback(
-        detected.length > 0
-          ? `Found ${detected.length} line${detected.length === 1 ? "" : "s"}. Correct anything I misread and the scan updates.`
-          : "No readable text found.",
+        detected.length === 0
+          ? "No readable text found."
+          : aiLines
+            ? `Read ${detected.length} line${detected.length === 1 ? "" : "s"} with ${aiModel || "the vision model"}. Correct anything and the scan updates.`
+            : `Found ${detected.length} line${detected.length === 1 ? "" : "s"} with offline matching. Add an AI key for more accurate reading.`,
       );
     } catch {
       setPromptFeedback("I couldn't read this scan.");
@@ -1396,7 +1466,18 @@ export default function ImageEditor({
               <label key={field.id} className="block">
                 <span className="mb-1 flex items-center justify-between gap-2 text-[11px] text-slate-500">
                   <span>Line {index + 1}</span>
-                  <span>{Math.round(field.confidence * 100)}% shape match</span>
+                  <span
+                    className={cx(
+                      "rounded px-1.5 py-0.5 font-semibold",
+                      field.source === "ai"
+                        ? "bg-fuchsia-500/15 text-fuchsia-300"
+                        : "bg-slate-800 text-slate-400",
+                    )}
+                  >
+                    {field.source === "ai"
+                      ? "AI"
+                      : `${Math.round(field.confidence * 100)}% shape match`}
+                  </span>
                 </span>
                 <input
                   className="field !py-2 text-[13px]"

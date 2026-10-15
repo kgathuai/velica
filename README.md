@@ -40,20 +40,29 @@ QWEN_MODEL=Qwen/Qwen2.5-VL-72B-Instruct
 
 If `QWEN_BASE_URL` or `QWEN_API_KEY` is missing, the app uses a safe fallback extraction for local development.
 
-### Optional: AI image editing
+### Optional: AI
 
-Only the **AI edit** button in the picture editor uses this. Everything else works offline
-with no keys. See `.env.example`:
+Only two things use a model. Add **one key** to `.env.local` and both light up; without it the
+app still works and says so.
 
 ```bash
-IMAGE_EDIT_API_KEY=your_key
-IMAGE_EDIT_MODEL=gemini-2.5-flash-image
-# Optional, for any OpenAI-compatible endpoint that can return images:
-# IMAGE_EDIT_BASE_URL=https://openrouter.ai/api/v1
+AI_API_KEY=your_key                        # Google Gemini by default
+AI_READ_MODEL=gemini-2.5-flash             # reading a scan
+IMAGE_EDIT_MODEL=gemini-2.5-flash-image    # the AI edit button
+# Or point at any OpenAI-compatible endpoint, e.g. OpenRouter:
+# AI_BASE_URL=https://openrouter.ai/api/v1
 ```
 
-Leave `IMAGE_EDIT_BASE_URL` unset to use Google Gemini directly. While no key is set, the
-button replies with a message explaining what to configure rather than failing silently.
+Configuration is layered — `AI_*` wins, then `IMAGE_EDIT_*`, then the `QWEN_*` variables the
+verification flow already uses. So **if Qwen is already configured, document reading works as
+it is** with no new key. See `.env.example`.
+
+**What each one does**
+
+- **Reading a scan** — the vision model transcribes the lines while the app supplies the
+  geometry. Models read far better than they localise, so their boxes are treated as a hint:
+  the locally detected box is used if theirs is missing or implausible.
+- **AI edit** — describes a change and re-renders the picture.
 
 ## Run Locally
 
@@ -93,16 +102,20 @@ the surrounding paper, then the new value is drawn in the document's own colour,
 
 The reading is done with **template OCR**, no model and no network:
 
-1. Threshold the page into ink and paper.
-2. Split the ink into character boxes, then group those into lines.
-3. Pick the font whose rendered glyphs best explain the page.
-4. Render `A–Z a–z 0–9` and punctuation in that font and match each character by shape,
+1. Split the page into lines with a row projection, then each line into characters.
+2. Pick the font whose rendered glyphs best explain the page.
+3. Render `A–Z a–z 0–9` and punctuation in that font and match each character by shape,
    scoring both overlap and aspect ratio. Word gaps are inferred from wider spaces.
 
-> **Expect to correct it.** Character shapes are compared, not understood, so lookalikes
-> (`O`/`0`, `l`/`1`, `rn`/`m`) will sometimes be wrong. That is exactly why the output is a form
-> you can edit rather than a finished result — the picture is only rewritten once you accept a
-> value. Loading the document's actual font file (Load font) makes the matching markedly better.
+**With an AI key this is replaced by a vision model**, which is much more accurate. The split
+of work is deliberate: the model supplies the *text*, the steps above supply the *geometry*, so
+the boxes that get written back onto the page are always the locally detected ones.
+
+> **Without a key, expect to correct it.** Character shapes are compared, not understood, so
+> lookalikes (`O`/`0`, `l`/`1`, `rn`/`m`) will sometimes be wrong. That is exactly why the
+> output is a form you can edit rather than a finished result — the picture is only rewritten
+> once you accept a value. Fields read by the model are tagged **AI**; the offline ones show a
+> percentage match.
 
 ## Where documents are saved
 
